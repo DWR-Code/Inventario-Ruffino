@@ -3,37 +3,50 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Scanner Inventario Ruffino — EAN Cassa</title>
+  <title>Scanner Inventario Ruffino — EAN Sensibile</title>
   <script src="https://unpkg.com/@zxing/library@latest"></script>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 14px; }
     h1 { margin: 0 0 12px; }
-    .card { border: 1px solid #ccc; border-radius: 12px; padding: 14px; max-width: 720px; }
+    .card { border: 1px solid #ccc; border-radius: 12px; padding: 14px; max-width: 760px; margin-inline: auto; }
     label { display:block; margin: 6px 0 4px; font-weight: 600; }
     input, select, button { font-size: 16px; padding: 10px; box-sizing: border-box; }
     button { cursor: pointer; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    video { width: 100%; max-width: 720px; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid #999; background: #000; }
+    .controls { display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 10px; }
+    .controls > * { flex: 1; min-width: 180px; }
     .muted { color: #666; font-size: 14px; }
     .ok { color: #0a7; }
     .err { color: #c00; white-space: pre-wrap; }
+    video { width: 100%; max-width: 760px; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid #999; background: #000; display:block; margin-inline:auto; }
     #scanner-section { display:none; }
     #status { margin-top: 8px; }
     #last-scan { margin-top: 8px; font-weight: 700; font-size: 18px; }
     #counter { margin-top: 6px; font-size: 15px; }
-    .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom: 8px; }
-    .controls > * { flex: 1; min-width: 160px; }
-    /* flash “cassa”: overlay verde per conferma */
+    /* Overlay area di mira (aiuta a stare nella zona più nitida) */
+    .aim {
+      position: relative;
+    }
+    .aim::after {
+      content: "";
+      position: absolute;
+      inset: 10%;
+      border: 3px dashed rgba(0,255,0,0.35);
+      border-radius: 10px;
+      pointer-events: none;
+    }
+    /* flash “cassa” verde */
     #flash {
       position: fixed; inset: 0; background: rgba(0,200,0,0.35);
       pointer-events: none; opacity: 0; transition: opacity 120ms ease;
     }
     #flash.show { opacity: 1; }
+    .range-row { display:flex; align-items:center; gap:8px; }
+    .range-row input[type="range"] { flex: 1; }
   </style>
 </head>
 <body>
-  <h1>📦 Scanner Inventario Ruffino — Cassa</h1>
+  <h1>📦 Scanner Inventario Ruffino — EAN Sensibile</h1>
 
   <div id="login-section" class="card">
     <p><b>Accesso</b></p>
@@ -57,7 +70,7 @@
       </div>
       <div>
         <label>&nbsp;</label>
-        <button id="torch-btn">Torcia: Off</button>
+        <button id="torch-btn">Torcia: Auto</button>
       </div>
       <div>
         <label>&nbsp;</label>
@@ -68,7 +81,15 @@
       </div>
     </div>
 
-    <video id="video" playsinline muted autoplay></video>
+    <div class="range-row">
+      <label for="zoom">Zoom</label>
+      <input id="zoom" type="range" min="1" max="5" step="0.1" value="1.6" />
+      <span id="zoomValue" class="muted">1.6×</span>
+    </div>
+
+    <div class="aim">
+      <video id="video" playsinline muted autoplay></video>
+    </div>
 
     <div id="status" class="muted">In attesa permesso fotocamera…</div>
     <div id="last-scan"></div>
@@ -76,16 +97,15 @@
     <div id="error" class="err"></div>
 
     <details style="margin-top:10px;">
-      <summary>Note</summary>
+      <summary>Consigli per lettura rapida</summary>
       <ul class="muted">
-        <li>Legge solo <b>EAN-13</b> per velocità/precisione.</li>
-        <li>HTTPS richiesto (GitHub Pages va bene).</li>
-        <li>Se hai più fotocamere, scegli la “posteriore” e premi <i>Cambia/riavvia</i>.</li>
+        <li>Tienilo nell’area tratteggiata, orizzontale, ben illuminato.</li>
+        <li>Fai in modo che il codice occupi ~60–80% della larghezza.</li>
+        <li>Se sfoca, aumenta un po’ lo <b>zoom</b> o usa la <b>torcia</b>.</li>
       </ul>
     </details>
   </div>
 
-  <!-- overlay “flash” -->
   <div id="flash"></div>
 
   <script>
@@ -118,11 +138,14 @@
       username: document.getElementById('username'),
       password: document.getElementById('password'),
       flash: document.getElementById('flash'),
+      zoom: document.getElementById('zoom'),
+      zoomValue: document.getElementById('zoomValue'),
     };
 
     els.loginBtn.addEventListener('click', doLogin);
-    els.restartBtn.addEventListener('click', () => startScanner(els.cameraSelect.value));
+    els.restartBtn.addEventListener('click', () => startScanner(els.cameraSelect.value, { keepZoom: true }));
     els.torchBtn.addEventListener('click', toggleTorch);
+    els.zoom.addEventListener('input', onZoomInput);
 
     async function doLogin() {
       const u = els.username.value.trim();
@@ -131,11 +154,10 @@
       window._username = u;
       window._password = p;
 
-      // inizializza audio su gesture utente (iOS)
       try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         await audioCtx.resume();
-      } catch { /* ok se fallisce, riproveremo al beep */ }
+      } catch {}
 
       els.loginSection.style.display = 'none';
       els.scannerSection.style.display = 'block';
@@ -159,7 +181,7 @@
         const devices = await codeReader.listVideoInputDevices();
         if (!devices || devices.length === 0) throw new Error("Nessuna fotocamera rilevata.");
 
-        // popola select
+        // Popola select
         els.cameraSelect.innerHTML = "";
         devices.forEach(d => {
           const opt = document.createElement('option');
@@ -168,7 +190,7 @@
           els.cameraSelect.appendChild(opt);
         });
 
-        // preferisci posteriore
+        // Preferisci posteriore
         const back = devices.find(d => /back|rear|posteriore/i.test(d.label || ""));
         currentDeviceId = back ? back.deviceId : devices[0].deviceId;
         els.cameraSelect.value = currentDeviceId;
@@ -179,36 +201,55 @@
       }
     }
 
-    async function startScanner(deviceId) {
-      els.status.textContent = "Avvio scanner…";
+    async function startScanner(deviceId, opts = {}) {
+      els.status.textContent = "Avvio scanner in alta qualità…";
       els.error.textContent = "";
-      els.lastScan.textContent = "";
       scanningEnabled = true;
-
       els.video.setAttribute('playsinline', 'true');
       els.video.setAttribute('muted', 'true');
 
       try { await codeReader.reset(); } catch {}
 
-      // constraints per qualità e camera “environment”
+      const desiredZoom = opts.keepZoom ? parseFloat(els.zoom.value) : 1.6;
+      els.zoom.value = String(desiredZoom);
+      els.zoomValue.textContent = `${desiredZoom.toFixed(1)}×`;
+
       const constraints = {
         audio: false,
         video: {
           deviceId: deviceId ? { exact: deviceId } : undefined,
           facingMode: deviceId ? undefined : { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          focusMode: "continuous"
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 60, max: 60 },
+          focusMode: "continuous",
+          // alcuni browser accettano advanced
+          advanced: [
+            { focusMode: "continuous" }
+          ]
         }
       };
 
       try {
         await codeReader.decodeFromConstraints(constraints, els.video, onScanFrame);
 
-        // salva track (per torcia)
         const s = els.video.srcObject;
-        if (s && s.getVideoTracks().length) streamTrack = s.getVideoTracks()[0];
-        updateTorchUi();
+        if (s && s.getVideoTracks().length) {
+          streamTrack = s.getVideoTracks()[0];
+
+          // prova ad accendere la torcia automaticamente (se supportata)
+          try {
+            const caps = streamTrack.getCapabilities?.() || {};
+            if (caps.torch) {
+              await streamTrack.applyConstraints({ advanced: [{ torch: true }] });
+              els.torchBtn.textContent = "Torcia: On";
+            } else {
+              els.torchBtn.textContent = "Torcia: N/D";
+            }
+            // set zoom iniziale (se supportato)
+            await applyZoom(desiredZoom, true);
+          } catch {}
+        }
 
         els.status.innerHTML = '<span class="ok">Scanner attivo ✔️ — passa i prodotti davanti</span>';
       } catch (err) {
@@ -219,21 +260,17 @@
     function onScanFrame(result, err) {
       if (result) {
         const codice = result.getText().trim();
+        if (!/^\d{13}$/.test(codice)) return; // EAN-13
 
-        // EAN-13 deve essere 13 cifre
-        if (!/^\d{13}$/.test(codice)) return;
-
-        // evita dup entro 2s
         const now = Date.now();
-        if (lastSent.code === codice && (now - lastSent.time) < 2000) return;
+        if (lastSent.code === codice && (now - lastSent.time) < 1200) return; // debounce 1.2s
 
         lastSent = { code: codice, time: now };
-        confirmEffect();            // bip + vibrazione + flash
+        confirmEffect();
         els.lastScan.textContent = `Ultimo EAN: ${codice}`;
         sessionCount++;
         els.counter.textContent = `Scansioni questa sessione: ${sessionCount}`;
 
-        // invia al foglio
         sendCode(codice).catch(handleError);
       }
       if (err && !(err instanceof ZXing.NotFoundException)) {
@@ -242,40 +279,31 @@
     }
 
     function confirmEffect() {
-      // BIP
+      // bip
       if (els.beepToggle.checked) {
         try {
           if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
           const o = audioCtx.createOscillator();
           const g = audioCtx.createGain();
-          o.type = "square";
-          o.frequency.value = 880; // A5
+          o.type = "square"; o.frequency.value = 900;
           g.gain.value = 0.0001;
           o.connect(g); g.connect(audioCtx.destination);
           o.start();
-          // inviluppo rapido “bip”
-          const now = audioCtx.currentTime;
-          g.gain.exponentialRampToValueAtTime(0.2, now + 0.01);
-          g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
-          o.stop(now + 0.2);
+          const t0 = audioCtx.currentTime;
+          g.gain.exponentialRampToValueAtTime(0.22, t0 + 0.01);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+          o.stop(t0 + 0.2);
         } catch {}
       }
-      // vibrazione (se supportata)
-      if (navigator.vibrate) navigator.vibrate(60);
-      // flash verde
-      els.flash.classList.add('show');
-      setTimeout(() => els.flash.classList.remove('show'), 120);
+      if (navigator.vibrate) navigator.vibrate(50);
+      els.flash.classList.add('show'); setTimeout(() => els.flash.classList.remove('show'), 110);
     }
 
     async function sendCode(codice) {
       els.status.textContent = "Invio al foglio…";
       const resp = await fetch(ENDPOINT, {
         method: "POST",
-        body: JSON.stringify({
-          username: window._username,
-          password: window._password,
-          codice
-        }),
+        body: JSON.stringify({ username: window._username, password: window._password, codice }),
       });
       const json = await resp.json();
       if (json.success) {
@@ -288,18 +316,34 @@
     async function toggleTorch() {
       if (!streamTrack) return;
       try {
-        const cap = streamTrack.getCapabilities ? streamTrack.getCapabilities() : {};
-        if (!cap.torch) { els.error.textContent = "Torcia non supportata su questa camera."; return; }
-        const curr = streamTrack.getSettings().torch || false;
-        await streamTrack.applyConstraints({ advanced: [{ torch: !curr }] });
-        updateTorchUi();
+        const caps = streamTrack.getCapabilities?.() || {};
+        if (!caps.torch) { els.error.textContent = "Torcia non supportata."; return; }
+        const on = streamTrack.getSettings().torch || false;
+        await streamTrack.applyConstraints({ advanced: [{ torch: !on }] });
+        els.torchBtn.textContent = `Torcia: ${!on ? "On" : "Off"}`;
       } catch (e) { handleError(e); }
     }
 
-    function updateTorchUi() {
-      if (!streamTrack) { els.torchBtn.textContent = "Torcia: Off"; return; }
-      const s = streamTrack.getSettings ? streamTrack.getSettings() : {};
-      els.torchBtn.textContent = `Torcia: ${s.torch ? "On" : "Off"}`;
+    function onZoomInput() {
+      const z = parseFloat(els.zoom.value);
+      els.zoomValue.textContent = `${z.toFixed(1)}×`;
+      applyZoom(z).catch(handleError);
+    }
+
+    async function applyZoom(z, quiet=false) {
+      if (!streamTrack) return;
+      try {
+        const caps = streamTrack.getCapabilities?.() || {};
+        if (!("zoom" in caps)) {
+          if (!quiet) els.error.textContent = "Zoom non supportato da questa camera.";
+          return;
+        }
+        const min = caps.zoom.min ?? 1, max = caps.zoom.max ?? 5;
+        const clamped = Math.max(min, Math.min(max, z));
+        await streamTrack.applyConstraints({ advanced: [{ zoom: clamped }] });
+      } catch (e) {
+        if (!quiet) throw e;
+      }
     }
 
     function handleError(e) {
