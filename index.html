@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Inventario Ruffino — EAN Turbo</title>
+  <title>Inventario Ruffino — EAN Turbo (fix layout/orientamento)</title>
   <!-- ZXing (UMD) -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
   <!-- Quagga (aggressivo per 1D) -->
@@ -16,29 +16,69 @@
     label { display:block; margin: 6px 0 4px; font-weight: 600; }
     input, select, button { font-size: 16px; padding: 10px; box-sizing: border-box; }
     button { cursor: pointer; }
+
     .controls { display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 10px; }
-    .controls > * { flex: 1; min-width: 180px; }
+    .controls > * { flex: 1; min-width: 160px; }
+
     .muted { color: #666; font-size: 14px; }
     .ok { color: #0a7; }
     .err { color: #c00; white-space: pre-wrap; }
-    video, canvas { width: 100%; max-width: 820px; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid #999; background: #000; display:block; margin-inline:auto; }
+
     #scanner-section { display:none; }
     #status { margin-top: 8px; }
     #last-scan { margin-top: 8px; font-weight: 700; font-size: 18px; }
     #counter { margin-top: 6px; font-size: 15px; }
-    /* overlay di mira (aiuta a centrare) */
-    .aim { position: relative; }
-    .aim::after {
-      content: ""; position: absolute; inset: 12%;
-      border: 3px dashed rgba(0,255,0,0.35); border-radius: 10px; pointer-events: none;
+
+    /* Viewport unico per video+overlay (sia ZXing che Quagga) */
+    .viewport {
+      position: relative;
+      width: 100%;
+      max-width: 820px;
+      margin-inline: auto;
+      /* Manteniamo 16:9 */
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border: 1px solid #999;
+      border-radius: 12px;
+      overflow: hidden;
     }
+
+    /* Elementi video/canvas riempiono il contenitore */
+    .viewport video,
+    .viewport canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;           /* riempi senza distorcere */
+      transform-origin: 50% 50%;   /* utile per la rotazione */
+      background: #000;
+    }
+
+    /* Overlay tratteggiato (sempre uno solo) */
+    .aim {
+      pointer-events: none;
+      position: absolute;
+      inset: 12%;
+      border: 3px dashed rgba(0,255,0,0.35);
+      border-radius: 10px;
+      z-index: 5;
+    }
+
     /* flash conferma */
     #flash { position: fixed; inset: 0; background: rgba(0,200,0,0.35); pointer-events: none; opacity: 0; transition: opacity 120ms ease;}
     #flash.show { opacity: 1; }
+
     .range-row { display:flex; align-items:center; gap:8px; }
     .range-row input[type="range"] { flex: 1; }
-    /* canvas per Quagga */
-    #quagga-canvas { display:none; } /* Quagga disegna internamente; lo teniamo off */
+
+    /* Classe per ruotare di 90° l’intero viewport (video + quagga) */
+    .rot90 .viewport video,
+    .rot90 .viewport canvas,
+    .rot90 .viewport .quagga-video,
+    .rot90 .viewport .quagga-canvas {
+      transform: rotate(90deg);
+    }
   </style>
 </head>
 <body>
@@ -59,7 +99,7 @@
       <div>
         <label for="engine">Motore</label>
         <select id="engine">
-          <option value="zxing" selected>ZXing (con torcia/zoom)</option>
+          <option value="zxing" selected>ZXing (torcia/zoom)</option>
           <option value="quagga">Quagga (aggressivo EAN)</option>
         </select>
       </div>
@@ -69,7 +109,11 @@
       </div>
       <div>
         <label>&nbsp;</label>
-        <button id="restart-btn">Riavvia motore</button>
+        <button id="restart-btn">Riavvia</button>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="rotate-btn">Ruota 90°</button>
       </div>
       <div>
         <label>&nbsp;</label>
@@ -90,10 +134,12 @@
       <span id="zoomValue" class="muted">1.8×</span>
     </div>
 
-    <!-- Area video: ZXing usa <video>, Quagga usa il suo canvas/elemento -->
-    <div class="aim">
-      <video id="video" playsinline muted autoplay></video>
-      <canvas id="quagga-canvas"></canvas>
+    <!-- Viewport unico; per ZXing usiamo il <video>; per Quagga Quagga inserirà i suoi elementi qui -->
+    <div id="stage" class="stage">
+      <div class="viewport" id="viewport">
+        <video id="video" playsinline muted autoplay></video>
+        <div class="aim"></div>
+      </div>
     </div>
 
     <div id="status" class="muted">In attesa permesso fotocamera…</div>
@@ -104,9 +150,9 @@
     <details style="margin-top:10px;">
       <summary>Consigli</summary>
       <ul class="muted">
-        <li>Solo <b>EAN-13</b> per massima velocità.</li>
-        <li>HTTPS richiesto (GitHub Pages va bene).</li>
-        <li>Illuminazione buona. Usa torcia/zoom (ZXing) o avvicina/allontana (Quagga).</li>
+        <li>Solo <b>EAN-13</b> per velocità.</li>
+        <li>HTTPS richiesto (GitHub Pages ok).</li>
+        <li>Se il video sembra ruotato, premi <b>Ruota 90°</b>.</li>
       </ul>
     </details>
   </div>
@@ -119,22 +165,25 @@
     // ==============
 
     let engine = 'zxing';
-    let codeReader = null;           // ZXing
-    let streamTrack = null;          // media track comune (quando disponibile)
+    let codeReader = null;   // ZXing
+    let streamTrack = null;
     let currentDeviceId = null;
     let audioCtx = null;
     let sessionCount = 0;
     let lastSent = { code: null, time: 0 };
+    let rotated = false; // stato rotazione 90°
 
     const els = {
       loginSection: document.getElementById('login-section'),
       scannerSection: document.getElementById('scanner-section'),
       loginBtn: document.getElementById('login-btn'),
       loginMsg: document.getElementById('login-msg'),
+      stage: document.getElementById('stage'),
+      viewport: document.getElementById('viewport'),
       video: document.getElementById('video'),
-      quaggaCanvas: document.getElementById('quagga-canvas'),
       cameraSelect: document.getElementById('cameraSelect'),
       restartBtn: document.getElementById('restart-btn'),
+      rotateBtn: document.getElementById('rotate-btn'),
       torchBtn: document.getElementById('torch-btn'),
       beepToggle: document.getElementById('beep-toggle'),
       status: document.getElementById('status'),
@@ -143,7 +192,6 @@
       error: document.getElementById('error'),
       username: document.getElementById('username'),
       password: document.getElementById('password'),
-      flash: document.getElementById('flash'),
       zoom: document.getElementById('zoom'),
       zoomValue: document.getElementById('zoomValue'),
       engine: document.getElementById('engine'),
@@ -152,9 +200,22 @@
     // UI handlers
     els.loginBtn.addEventListener('click', doLogin);
     els.restartBtn.addEventListener('click', restartEngine);
+    els.rotateBtn.addEventListener('click', () => {
+      rotated = !rotated;
+      toggleRotation();
+    });
     els.torchBtn.addEventListener('click', toggleTorch);
     els.zoom.addEventListener('input', onZoomInput);
     els.engine.addEventListener('change', async () => { engine = els.engine.value; await restartEngine(); });
+
+    function toggleRotation() {
+      // Applichiamo/ritiriamo la classe rot90 sul contenitore esterno
+      if (rotated) {
+        els.stage.classList.add('rot90');
+      } else {
+        els.stage.classList.remove('rot90');
+      }
+    }
 
     async function doLogin() {
       const u = els.username.value.trim();
@@ -189,23 +250,7 @@
         const back = cams.find(d => /back|rear|posteriore/i.test(d.label || ""));
         currentDeviceId = back ? back.deviceId : (cams[0] && cams[0].deviceId) || null;
         if (currentDeviceId) els.cameraSelect.value = currentDeviceId;
-      } catch (e) {
-        // fallback: ZXing può listare
-        try {
-          const tempReader = new ZXing.BrowserMultiFormatReader();
-          const devices = await tempReader.listVideoInputDevices();
-          els.cameraSelect.innerHTML = "";
-          devices.forEach(d => {
-            const opt = document.createElement('option');
-            opt.value = d.deviceId;
-            opt.textContent = d.label || `Camera ${d.deviceId.slice(0,6)}…`;
-            els.cameraSelect.appendChild(opt);
-          });
-          const back = devices.find(d => /back|rear|posteriore/i.test(d.label || ""));
-          currentDeviceId = back ? back.deviceId : (devices[0] && devices[0].deviceId) || null;
-          if (currentDeviceId) els.cameraSelect.value = currentDeviceId;
-        } catch {}
-      }
+      } catch {}
 
       await startEngine();
     }
@@ -216,11 +261,18 @@
     }
 
     async function startEngine() {
-      if (engine === 'zxing') {
-        await startZXing();
-      } else {
-        await startQuagga();
-      }
+      // pulisci viewport da residui Quagga
+      cleanupQuaggaDom();
+      // Mostra il video solo per ZXing; Quagga aggiunge da sé i suoi elementi
+      els.video.style.display = (engine === 'zxing') ? 'block' : 'none';
+      els.status.textContent = engine === 'zxing'
+        ? "Avvio ZXing…"
+        : "Avvio Quagga…";
+      rotated = false;
+      toggleRotation();
+
+      if (engine === 'zxing') await startZXing();
+      else await startQuagga();
     }
 
     async function stopAll() {
@@ -230,6 +282,7 @@
       try { if (codeReader) await codeReader.reset(); } catch {}
       // Quagga
       try { if (window.Quagga && Quagga.stop) Quagga.stop(); } catch {}
+      cleanupQuaggaDom();
       // Stream track comune
       try {
         if (streamTrack) { streamTrack.stop(); streamTrack = null; }
@@ -238,6 +291,12 @@
           els.video.srcObject = null;
         }
       } catch {}
+    }
+
+    function cleanupQuaggaDom() {
+      // Quagga inserisce elementi dentro #viewport. Li rimuoviamo quando cambiamo motore.
+      const toKill = els.viewport.querySelectorAll('.drawingBuffer, .quagga-video, .quagga-canvas, .overlay, video:not(#video), canvas');
+      toKill.forEach(n => n.remove());
     }
 
     // ---------------- ZXING ----------------
@@ -249,7 +308,6 @@
     }
 
     async function startZXing() {
-      els.status.textContent = "Avvio ZXing in alta qualità…";
       codeReader = new ZXing.BrowserMultiFormatReader(buildHintsEAN13());
 
       const constraints = {
@@ -267,6 +325,8 @@
 
       try {
         await codeReader.decodeFromConstraints(constraints, els.video, onZXingFrame);
+
+        // track per torcia/zoom
         const s = els.video.srcObject;
         if (s && s.getVideoTracks().length) {
           streamTrack = s.getVideoTracks()[0];
@@ -282,7 +342,8 @@
             await applyZoom(parseFloat(els.zoom.value), true);
           } catch {}
         }
-        els.status.innerHTML = '<span class="ok">ZXing attivo ✔️ — passa i prodotti davanti</span>';
+
+        els.status.innerHTML = '<span class="ok">ZXing attivo ✔️</span>';
       } catch (err) { handleError(err); }
     }
 
@@ -325,40 +386,36 @@
 
     // ---------------- QUAGGA ----------------
     async function startQuagga() {
-      els.status.textContent = "Avvio Quagga (aggressivo) …";
-
-      // Config aggressiva per EAN-13
       const config = {
         inputStream: {
           type: "LiveStream",
-          target: document.querySelector(".aim"), // container
+          target: document.getElementById("viewport"), // un solo contenitore
           constraints: {
             facingMode: "environment",
             deviceId: currentDeviceId || undefined,
             width: { ideal: 1920 },
             height: { ideal: 1080 }
           },
-          area: { // focus centrale (percentuali)
-            top: "10%", right: "10%", left: "10%", bottom: "10%"
-          }
+          area: { top: "12%", right: "12%", left: "12%", bottom: "12%" } // match overlay
         },
-        locator: {
-          patchSize: "x-large", // "x-large" migliora lettura distante
-          halfSample: false
-        },
+        locator: { patchSize: "x-large", halfSample: false },
         numOfWorkers: navigator.hardwareConcurrency ? Math.min(4, navigator.hardwareConcurrency) : 2,
-        frequency: 10, // scansioni/secondo
-        decoder: {
-          readers: [{ format: "ean_reader", config: {} }]
-        },
+        frequency: 10,
+        decoder: { readers: [{ format: "ean_reader", config: {} }] },
         locate: true
       };
 
       return new Promise((resolve) => {
-        Quagga.init(config, async (err) => {
+        Quagga.init(config, (err) => {
           if (err) { handleError(err); resolve(); return; }
 
-          // Prendi traccia per eventuale torcia (non sempre disponibile via Quagga)
+          // classi per assicurare che i video/canvas di quagga ereditino stile
+          const qv = document.querySelector("#viewport video");
+          const qc = document.querySelector("#viewport canvas");
+          if (qv) qv.classList.add('quagga-video');
+          if (qc) qc.classList.add('quagga-canvas');
+
+          // salva track (se accessibile)
           try {
             const track = Quagga.CameraAccess && Quagga.CameraAccess.getActiveTrack
               ? Quagga.CameraAccess.getActiveTrack()
@@ -367,10 +424,8 @@
           } catch {}
 
           Quagga.onDetected(onQuaggaDetected);
-          Quagga.onProcessed(() => {}); // hook debug se vuoi disegnare
-
           Quagga.start();
-          els.status.innerHTML = '<span class="ok">Quagga attivo ✔️ — passa i prodotti davanti</span>';
+          els.status.innerHTML = '<span class="ok">Quagga attivo ✔️</span>';
           resolve();
         });
       });
@@ -386,15 +441,13 @@
     // ------------- comune: detection -------------
     function handleDetection(code) {
       const now = Date.now();
-      if (lastSent.code === code && (now - lastSent.time) < 1000) return; // debounce 1s
+      if (lastSent.code === code && (now - lastSent.time) < 900) return; // debounce ~1s
       lastSent = { code, time: now };
 
-      // feedback
       confirmEffect();
       els.lastScan.textContent = `Ultimo EAN: ${code}`;
       sessionCount++; updateCounter();
 
-      // invia
       sendCode(code).catch(handleError);
     }
 
@@ -418,7 +471,8 @@
         } catch {}
       }
       if (navigator.vibrate) navigator.vibrate(50);
-      els.flash.classList.add('show'); setTimeout(() => els.flash.classList.remove('show'), 110);
+      const flash = document.getElementById('flash');
+      flash.classList.add('show'); setTimeout(() => flash.classList.remove('show'), 110);
     }
 
     async function sendCode(codice) {
