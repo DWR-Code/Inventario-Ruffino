@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Scanner Inventario Ruffino</title>
+
+  <!-- ZXing UMD (globale: ZXing) -->
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
+
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
+    h1 { margin: 0 0 12px; }
+    .card { border: 1px solid #ccc; border-radius: 10px; padding: 16px; max-width: 640px; }
+    label { display:block; margin: 6px 0 4px; font-weight: 600; }
+    input, select, button { font-size: 16px; padding: 10px; width: 100%; box-sizing: border-box; }
+    button { cursor: pointer; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    video { width: 100%; max-width: 640px; border-radius: 12px; border: 1px solid #999; background: #000; }
+    .muted { color: #666; font-size: 14px; }
+    .ok { color: #0a7; }
+    .err { color: #c00; white-space: pre-wrap; }
+    #scanner-section { display:none; }
+    #status { margin-top: 8px; }
+    #last-scan { margin-top: 8px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>📦 Scanner Inventario Ruffino</h1>
+
+  <div id="login-section" class="card">
+    <p><b>Accesso</b></p>
+    <label for="username">Utente</label>
+    <input id="username" type="text" placeholder="Emporio" autocomplete="username" />
+
+    <label for="password">Password</label>
+    <input id="password" type="password" placeholder="Lallero" autocomplete="current-password" />
+
+    <button id="login-btn" style="margin-top:10px;">Entra</button>
+    <div id="login-msg" class="muted"></div>
+  </div>
+
+  <div id="scanner-section" class="card">
+    <div class="row">
+      <div>
+        <label for="cameraSelect">Sorgente video</label>
+        <select id="cameraSelect"></select>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="restart-btn">Cambia/riavvia camera</button>
+      </div>
+    </div>
+
+    <h3 style="margin-top:12px;">📷 Inquadra un codice a barre</h3>
+    <video id="video" playsinline muted autoplay></video>
+
+    <div id="status" class="muted">In attesa permesso fotocamera…</div>
+    <div id="last-scan"></div>
+    <div id="error" class="err"></div>
+
+    <details style="margin-top:10px;">
+      <summary>Impostazioni e note</summary>
+      <ul class="muted">
+        <li>HTTPS richiesto per usare la fotocamera (GitHub Pages è ok).</li>
+        <li>iOS: verifica che Safari abbia permesso la fotocamera per questo sito.</li>
+        <li>Se hai più fotocamere, usa il menu per selezionare “back” / “posteriore”.</li>
+      </ul>
+    </details>
+  </div>
+
+  <script>
+    // 👇👇 CONFIG 👇👇
+    const ENDPOINT = "https://script.google.com/macros/s/AKfycbx_aDKqFr15qhLoZvSV3aAo7hbzKNtJ73LLIWgZrq2xLm3ONjxJhigHwbi19qb1DdIq0w/exec";
+    // 👆👆 CONFIG 👆👆
+
+    let codeReader = null;
+    let currentDeviceId = null;
+    let scanning = false;
+
+    const els = {
+      loginSection: document.getElementById('login-section'),
+      scannerSection: document.getElementById('scanner-section'),
+      loginBtn: document.getElementById('login-btn'),
+      loginMsg: document.getElementById('login-msg'),
+      video: document.getElementById('video'),
+      cameraSelect: document.getElementById('cameraSelect'),
+      restartBtn: document.getElementById('restart-btn'),
+      status: document.getElementById('status'),
+      lastScan: document.getElementById('last-scan'),
+      error: document.getElementById('error'),
+      username: document.getElementById('username'),
+      password: document.getElementById('password'),
+    };
+
+    els.loginBtn.addEventListener('click', doLogin);
+    els.restartBtn.addEventListener('click', () => startScanner(els.cameraSelect.value));
+
+    async function doLogin() {
+      const u = els.username.value.trim();
+      const p = els.password.value.trim();
+      if (!u || !p) {
+        els.loginMsg.textContent = "Inserisci utente e password.";
+        return;
+      }
+      window._username = u;
+      window._password = p;
+      els.loginSection.style.display = 'none';
+      els.scannerSection.style.display = 'block';
+      await initScanner();
+    }
+
+    async function initScanner() {
+      els.status.textContent = "Richiesta permesso fotocamera…";
+      els.error.textContent = "";
+      try {
+        // ZXing setup
+        codeReader = new ZXing.BrowserMultiFormatReader();
+
+        // *** Richiedi device list ***
+        const devices = await codeReader.listVideoInputDevices();
+
+        if (!devices || devices.length === 0) {
+          throw new Error("Nessuna fotocamera rilevata. Verifica i permessi del browser e che il dispositivo abbia una camera.");
+        }
+
+        // Popola select
+        els.cameraSelect.innerHTML = "";
+        devices.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `Camera ${d.deviceId.substring(0,6)}…`;
+          els.cameraSelect.appendChild(opt);
+        });
+
+        // Prova a scegliere la posteriore
+        let backCam = devices.find(d =>
+          /back|rear|posteriore/i.test(d.label || "")
+        );
+        currentDeviceId = backCam ? backCam.deviceId : devices[0].deviceId;
+        els.cameraSelect.value = currentDeviceId;
+
+        await startScanner(currentDeviceId);
+      } catch (err) {
+        handleError(err);
+      }
+    }
+
+    async function startScanner(deviceId) {
+      if (!codeReader) codeReader = new ZXing.BrowserMultiFormatReader();
+      els.status.textContent = "Avvio scanner…";
+      els.error.textContent = "";
+      els.lastScan.textContent = "";
+      scanning = true;
+
+      // iOS: assicurati che il video sia pronto per inline playback
+      els.video.setAttribute('playsinline', 'true');
+      els.video.setAttribute('muted', 'true');
+      try {
+        await codeReader.reset(); // stop di eventuali stream precedenti
+      } catch {}
+
+      try {
+        await codeReader.decodeFromVideoDevice(deviceId || null, els.video, onScanResult);
+        els.status.innerHTML = '<span class="ok">Scanner attivo ✔️</span>';
+      } catch (err) {
+        handleError(err);
+      }
+    }
+
+    function onScanResult(result, err) {
+      if (result) {
+        const codice = result.getText();
+        els.lastScan.textContent = `Ultimo codice: ${codice}`;
+        // Debounce: evita richieste duplicate se la camera lo “vede” più volte
+        if (scanning) {
+          scanning = false;
+          sendCode(codice).finally(() => {
+            // riabilita dopo un attimo
+            setTimeout(() => { scanning = true; }, 800);
+          });
+        }
+      }
+      if (err && !(err instanceof ZXing.NotFoundException)) {
+        // Errori non “not found” (normale durante la scansione)
+        console.warn(err);
+      }
+    }
+
+    async function sendCode(codice) {
+      els.status.textContent = "Invio al foglio…";
+      try {
+        const resp = await fetch(ENDPOINT, {
+          method: "POST",
+          body: JSON.stringify({
+            username: window._username,
+            password: window._password,
+            codice
+          }),
+        });
+        const json = await resp.json();
+        if (json.success) {
+          els.status.innerHTML = `<span class="ok">Registrato ✔️</span>`;
+        } else {
+          handleError(new Error(json.error || "Errore server"));
+        }
+      } catch (e) {
+        handleError(e);
+      }
+    }
+
+    function handleError(e) {
+      console.error(e);
+      els.error.textContent = e.message || String(e);
+      els.status.textContent = "Errore.";
+      // Suggerimenti frequenti
+      if (/NotAllowedError|Permission/i.test(els.error.textContent)) {
+        els.error.textContent += "\nConcedi il permesso fotocamera al sito (Impostazioni del browser → Fotocamera).";
+      }
+      if (/NotFoundError|device not found/i.test(els.error.textContent)) {
+        els.error.textContent += "\nNessuna camera trovata o permesso negato. Verifica che la pagina sia in HTTPS e riprova.";
+      }
+    }
+  </script>
+</body>
+</html>
