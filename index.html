@@ -3,13 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Scanner Inventario Ruffino — EAN Sensibile</title>
+  <title>Inventario Ruffino — EAN Turbo</title>
+  <!-- ZXing (UMD) -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
+  <!-- Quagga (aggressivo per 1D) -->
+  <script src="https://unpkg.com/quagga@0.12.1/dist/quagga.min.js"></script>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 14px; }
     h1 { margin: 0 0 12px; }
-    .card { border: 1px solid #ccc; border-radius: 12px; padding: 14px; max-width: 760px; margin-inline: auto; }
+    .card { border: 1px solid #ccc; border-radius: 12px; padding: 14px; max-width: 820px; margin-inline: auto; }
     label { display:block; margin: 6px 0 4px; font-weight: 600; }
     input, select, button { font-size: 16px; padding: 10px; box-sizing: border-box; }
     button { cursor: pointer; }
@@ -18,35 +21,28 @@
     .muted { color: #666; font-size: 14px; }
     .ok { color: #0a7; }
     .err { color: #c00; white-space: pre-wrap; }
-    video { width: 100%; max-width: 760px; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid #999; background: #000; display:block; margin-inline:auto; }
+    video, canvas { width: 100%; max-width: 820px; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid #999; background: #000; display:block; margin-inline:auto; }
     #scanner-section { display:none; }
     #status { margin-top: 8px; }
     #last-scan { margin-top: 8px; font-weight: 700; font-size: 18px; }
     #counter { margin-top: 6px; font-size: 15px; }
-    /* Overlay area di mira (aiuta a stare nella zona più nitida) */
-    .aim {
-      position: relative;
-    }
+    /* overlay di mira (aiuta a centrare) */
+    .aim { position: relative; }
     .aim::after {
-      content: "";
-      position: absolute;
-      inset: 10%;
-      border: 3px dashed rgba(0,255,0,0.35);
-      border-radius: 10px;
-      pointer-events: none;
+      content: ""; position: absolute; inset: 12%;
+      border: 3px dashed rgba(0,255,0,0.35); border-radius: 10px; pointer-events: none;
     }
-    /* flash “cassa” verde */
-    #flash {
-      position: fixed; inset: 0; background: rgba(0,200,0,0.35);
-      pointer-events: none; opacity: 0; transition: opacity 120ms ease;
-    }
+    /* flash conferma */
+    #flash { position: fixed; inset: 0; background: rgba(0,200,0,0.35); pointer-events: none; opacity: 0; transition: opacity 120ms ease;}
     #flash.show { opacity: 1; }
     .range-row { display:flex; align-items:center; gap:8px; }
     .range-row input[type="range"] { flex: 1; }
+    /* canvas per Quagga */
+    #quagga-canvas { display:none; } /* Quagga disegna internamente; lo teniamo off */
   </style>
 </head>
 <body>
-  <h1>📦 Scanner Inventario Ruffino — EAN Sensibile</h1>
+  <h1>📦 Inventario Ruffino — EAN Turbo</h1>
 
   <div id="login-section" class="card">
     <p><b>Accesso</b></p>
@@ -61,12 +57,19 @@
   <div id="scanner-section" class="card">
     <div class="controls">
       <div>
+        <label for="engine">Motore</label>
+        <select id="engine">
+          <option value="zxing" selected>ZXing (con torcia/zoom)</option>
+          <option value="quagga">Quagga (aggressivo EAN)</option>
+        </select>
+      </div>
+      <div>
         <label for="cameraSelect">Sorgente video</label>
         <select id="cameraSelect"></select>
       </div>
       <div>
         <label>&nbsp;</label>
-        <button id="restart-btn">Cambia/riavvia camera</button>
+        <button id="restart-btn">Riavvia motore</button>
       </div>
       <div>
         <label>&nbsp;</label>
@@ -82,13 +85,15 @@
     </div>
 
     <div class="range-row">
-      <label for="zoom">Zoom</label>
-      <input id="zoom" type="range" min="1" max="5" step="0.1" value="1.6" />
-      <span id="zoomValue" class="muted">1.6×</span>
+      <label for="zoom">Zoom (ZXing)</label>
+      <input id="zoom" type="range" min="1" max="5" step="0.1" value="1.8" />
+      <span id="zoomValue" class="muted">1.8×</span>
     </div>
 
+    <!-- Area video: ZXing usa <video>, Quagga usa il suo canvas/elemento -->
     <div class="aim">
       <video id="video" playsinline muted autoplay></video>
+      <canvas id="quagga-canvas"></canvas>
     </div>
 
     <div id="status" class="muted">In attesa permesso fotocamera…</div>
@@ -97,11 +102,11 @@
     <div id="error" class="err"></div>
 
     <details style="margin-top:10px;">
-      <summary>Consigli per lettura rapida</summary>
+      <summary>Consigli</summary>
       <ul class="muted">
-        <li>Tienilo nell’area tratteggiata, orizzontale, ben illuminato.</li>
-        <li>Fai in modo che il codice occupi ~60–80% della larghezza.</li>
-        <li>Se sfoca, aumenta un po’ lo <b>zoom</b> o usa la <b>torcia</b>.</li>
+        <li>Solo <b>EAN-13</b> per massima velocità.</li>
+        <li>HTTPS richiesto (GitHub Pages va bene).</li>
+        <li>Illuminazione buona. Usa torcia/zoom (ZXing) o avvicina/allontana (Quagga).</li>
       </ul>
     </details>
   </div>
@@ -113,13 +118,13 @@
     const ENDPOINT = "https://script.google.com/macros/s/AKfycbx_aDKqFr15qhLoZvSV3aAo7hbzKNtJ73LLIWgZrq2xLm3ONjxJhigHwbi19qb1DdIq0w/exec";
     // ==============
 
-    let codeReader = null;
+    let engine = 'zxing';
+    let codeReader = null;           // ZXing
+    let streamTrack = null;          // media track comune (quando disponibile)
     let currentDeviceId = null;
-    let streamTrack = null;
-    let scanningEnabled = true;
-    let lastSent = { code: null, time: 0 };
-    let sessionCount = 0;
     let audioCtx = null;
+    let sessionCount = 0;
+    let lastSent = { code: null, time: 0 };
 
     const els = {
       loginSection: document.getElementById('login-section'),
@@ -127,6 +132,7 @@
       loginBtn: document.getElementById('login-btn'),
       loginMsg: document.getElementById('login-msg'),
       video: document.getElementById('video'),
+      quaggaCanvas: document.getElementById('quagga-canvas'),
       cameraSelect: document.getElementById('cameraSelect'),
       restartBtn: document.getElementById('restart-btn'),
       torchBtn: document.getElementById('torch-btn'),
@@ -140,30 +146,101 @@
       flash: document.getElementById('flash'),
       zoom: document.getElementById('zoom'),
       zoomValue: document.getElementById('zoomValue'),
+      engine: document.getElementById('engine'),
     };
 
+    // UI handlers
     els.loginBtn.addEventListener('click', doLogin);
-    els.restartBtn.addEventListener('click', () => startScanner(els.cameraSelect.value, { keepZoom: true }));
+    els.restartBtn.addEventListener('click', restartEngine);
     els.torchBtn.addEventListener('click', toggleTorch);
     els.zoom.addEventListener('input', onZoomInput);
+    els.engine.addEventListener('change', async () => { engine = els.engine.value; await restartEngine(); });
 
     async function doLogin() {
       const u = els.username.value.trim();
       const p = els.password.value.trim();
       if (!u || !p) { els.loginMsg.textContent = "Inserisci utente e password."; return; }
-      window._username = u;
-      window._password = p;
+      window._username = u; window._password = p;
 
-      try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        await audioCtx.resume();
-      } catch {}
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); await audioCtx.resume(); } catch {}
 
       els.loginSection.style.display = 'none';
       els.scannerSection.style.display = 'block';
-      await initScanner();
+      await initEngine();
     }
 
+    async function initEngine() {
+      els.status.textContent = "Inizializzazione…";
+      els.error.textContent = "";
+      sessionCount = 0; updateCounter();
+      lastSent = { code: null, time: 0 };
+
+      // lista dispositivi video
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        els.cameraSelect.innerHTML = "";
+        cams.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `Camera ${d.deviceId.slice(0,6)}…`;
+          els.cameraSelect.appendChild(opt);
+        });
+        const back = cams.find(d => /back|rear|posteriore/i.test(d.label || ""));
+        currentDeviceId = back ? back.deviceId : (cams[0] && cams[0].deviceId) || null;
+        if (currentDeviceId) els.cameraSelect.value = currentDeviceId;
+      } catch (e) {
+        // fallback: ZXing può listare
+        try {
+          const tempReader = new ZXing.BrowserMultiFormatReader();
+          const devices = await tempReader.listVideoInputDevices();
+          els.cameraSelect.innerHTML = "";
+          devices.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.deviceId;
+            opt.textContent = d.label || `Camera ${d.deviceId.slice(0,6)}…`;
+            els.cameraSelect.appendChild(opt);
+          });
+          const back = devices.find(d => /back|rear|posteriore/i.test(d.label || ""));
+          currentDeviceId = back ? back.deviceId : (devices[0] && devices[0].deviceId) || null;
+          if (currentDeviceId) els.cameraSelect.value = currentDeviceId;
+        } catch {}
+      }
+
+      await startEngine();
+    }
+
+    async function restartEngine() {
+      await stopAll();
+      await startEngine();
+    }
+
+    async function startEngine() {
+      if (engine === 'zxing') {
+        await startZXing();
+      } else {
+        await startQuagga();
+      }
+    }
+
+    async function stopAll() {
+      els.status.textContent = "Arresto motore…";
+      els.error.textContent = "";
+      // ZXing
+      try { if (codeReader) await codeReader.reset(); } catch {}
+      // Quagga
+      try { if (window.Quagga && Quagga.stop) Quagga.stop(); } catch {}
+      // Stream track comune
+      try {
+        if (streamTrack) { streamTrack.stop(); streamTrack = null; }
+        if (els.video.srcObject) {
+          els.video.srcObject.getTracks().forEach(t => t.stop());
+          els.video.srcObject = null;
+        }
+      } catch {}
+    }
+
+    // ---------------- ZXING ----------------
     function buildHintsEAN13() {
       const hints = new Map();
       hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ ZXing.BarcodeFormat.EAN_13 ]);
@@ -171,73 +248,29 @@
       return hints;
     }
 
-    async function initScanner() {
-      els.status.textContent = "Richiesta permesso fotocamera…";
-      els.error.textContent = "";
-
-      try {
-        codeReader = new ZXing.BrowserMultiFormatReader(buildHintsEAN13());
-
-        const devices = await codeReader.listVideoInputDevices();
-        if (!devices || devices.length === 0) throw new Error("Nessuna fotocamera rilevata.");
-
-        // Popola select
-        els.cameraSelect.innerHTML = "";
-        devices.forEach(d => {
-          const opt = document.createElement('option');
-          opt.value = d.deviceId;
-          opt.textContent = d.label || `Camera ${d.deviceId.slice(0,6)}…`;
-          els.cameraSelect.appendChild(opt);
-        });
-
-        // Preferisci posteriore
-        const back = devices.find(d => /back|rear|posteriore/i.test(d.label || ""));
-        currentDeviceId = back ? back.deviceId : devices[0].deviceId;
-        els.cameraSelect.value = currentDeviceId;
-
-        await startScanner(currentDeviceId);
-      } catch (err) {
-        handleError(err);
-      }
-    }
-
-    async function startScanner(deviceId, opts = {}) {
-      els.status.textContent = "Avvio scanner in alta qualità…";
-      els.error.textContent = "";
-      scanningEnabled = true;
-      els.video.setAttribute('playsinline', 'true');
-      els.video.setAttribute('muted', 'true');
-
-      try { await codeReader.reset(); } catch {}
-
-      const desiredZoom = opts.keepZoom ? parseFloat(els.zoom.value) : 1.6;
-      els.zoom.value = String(desiredZoom);
-      els.zoomValue.textContent = `${desiredZoom.toFixed(1)}×`;
+    async function startZXing() {
+      els.status.textContent = "Avvio ZXing in alta qualità…";
+      codeReader = new ZXing.BrowserMultiFormatReader(buildHintsEAN13());
 
       const constraints = {
         audio: false,
         video: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
-          facingMode: deviceId ? undefined : { ideal: "environment" },
+          deviceId: currentDeviceId ? { exact: currentDeviceId } : undefined,
+          facingMode: currentDeviceId ? undefined : { ideal: "environment" },
           width: { ideal: 1920 },
           height: { ideal: 1080 },
           frameRate: { ideal: 60, max: 60 },
           focusMode: "continuous",
-          // alcuni browser accettano advanced
-          advanced: [
-            { focusMode: "continuous" }
-          ]
+          advanced: [{ focusMode: "continuous" }]
         }
       };
 
       try {
-        await codeReader.decodeFromConstraints(constraints, els.video, onScanFrame);
-
+        await codeReader.decodeFromConstraints(constraints, els.video, onZXingFrame);
         const s = els.video.srcObject;
         if (s && s.getVideoTracks().length) {
           streamTrack = s.getVideoTracks()[0];
-
-          // prova ad accendere la torcia automaticamente (se supportata)
+          // auto torcia ON se disponibile
           try {
             const caps = streamTrack.getCapabilities?.() || {};
             if (caps.torch) {
@@ -246,36 +279,127 @@
             } else {
               els.torchBtn.textContent = "Torcia: N/D";
             }
-            // set zoom iniziale (se supportato)
-            await applyZoom(desiredZoom, true);
+            await applyZoom(parseFloat(els.zoom.value), true);
           } catch {}
         }
-
-        els.status.innerHTML = '<span class="ok">Scanner attivo ✔️ — passa i prodotti davanti</span>';
-      } catch (err) {
-        handleError(err);
-      }
+        els.status.innerHTML = '<span class="ok">ZXing attivo ✔️ — passa i prodotti davanti</span>';
+      } catch (err) { handleError(err); }
     }
 
-    function onScanFrame(result, err) {
+    function onZXingFrame(result, err) {
       if (result) {
-        const codice = result.getText().trim();
-        if (!/^\d{13}$/.test(codice)) return; // EAN-13
-
-        const now = Date.now();
-        if (lastSent.code === codice && (now - lastSent.time) < 1200) return; // debounce 1.2s
-
-        lastSent = { code: codice, time: now };
-        confirmEffect();
-        els.lastScan.textContent = `Ultimo EAN: ${codice}`;
-        sessionCount++;
-        els.counter.textContent = `Scansioni questa sessione: ${sessionCount}`;
-
-        sendCode(codice).catch(handleError);
+        const code = result.getText().trim();
+        if (!/^\d{13}$/.test(code)) return;
+        handleDetection(code);
       }
-      if (err && !(err instanceof ZXing.NotFoundException)) {
-        console.warn(err);
-      }
+      if (err && !(err instanceof ZXing.NotFoundException)) console.warn(err);
+    }
+
+    async function toggleTorch() {
+      if (engine !== 'zxing') { els.error.textContent = "Torcia controllabile solo in ZXing."; return; }
+      if (!streamTrack) return;
+      try {
+        const caps = streamTrack.getCapabilities?.() || {};
+        if (!caps.torch) { els.error.textContent = "Torcia non supportata."; return; }
+        const on = streamTrack.getSettings().torch || false;
+        await streamTrack.applyConstraints({ advanced: [{ torch: !on }] });
+        els.torchBtn.textContent = `Torcia: ${!on ? "On" : "Off"}`;
+      } catch (e) { handleError(e); }
+    }
+
+    function onZoomInput() {
+      els.zoomValue.textContent = `${parseFloat(els.zoom.value).toFixed(1)}×`;
+      if (engine === 'zxing') applyZoom(parseFloat(els.zoom.value)).catch(handleError);
+    }
+
+    async function applyZoom(z, quiet=false) {
+      if (!streamTrack) return;
+      try {
+        const caps = streamTrack.getCapabilities?.() || {};
+        if (!("zoom" in caps)) { if (!quiet) els.error.textContent = "Zoom non supportato."; return; }
+        const min = caps.zoom.min ?? 1, max = caps.zoom.max ?? 5;
+        const clamped = Math.max(min, Math.min(max, z));
+        await streamTrack.applyConstraints({ advanced: [{ zoom: clamped }] });
+      } catch (e) { if (!quiet) throw e; }
+    }
+
+    // ---------------- QUAGGA ----------------
+    async function startQuagga() {
+      els.status.textContent = "Avvio Quagga (aggressivo) …";
+
+      // Config aggressiva per EAN-13
+      const config = {
+        inputStream: {
+          type: "LiveStream",
+          target: document.querySelector(".aim"), // container
+          constraints: {
+            facingMode: "environment",
+            deviceId: currentDeviceId || undefined,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
+          area: { // focus centrale (percentuali)
+            top: "10%", right: "10%", left: "10%", bottom: "10%"
+          }
+        },
+        locator: {
+          patchSize: "x-large", // "x-large" migliora lettura distante
+          halfSample: false
+        },
+        numOfWorkers: navigator.hardwareConcurrency ? Math.min(4, navigator.hardwareConcurrency) : 2,
+        frequency: 10, // scansioni/secondo
+        decoder: {
+          readers: [{ format: "ean_reader", config: {} }]
+        },
+        locate: true
+      };
+
+      return new Promise((resolve) => {
+        Quagga.init(config, async (err) => {
+          if (err) { handleError(err); resolve(); return; }
+
+          // Prendi traccia per eventuale torcia (non sempre disponibile via Quagga)
+          try {
+            const track = Quagga.CameraAccess && Quagga.CameraAccess.getActiveTrack
+              ? Quagga.CameraAccess.getActiveTrack()
+              : null;
+            if (track) streamTrack = track;
+          } catch {}
+
+          Quagga.onDetected(onQuaggaDetected);
+          Quagga.onProcessed(() => {}); // hook debug se vuoi disegnare
+
+          Quagga.start();
+          els.status.innerHTML = '<span class="ok">Quagga attivo ✔️ — passa i prodotti davanti</span>';
+          resolve();
+        });
+      });
+    }
+
+    function onQuaggaDetected(data) {
+      if (!data || !data.codeResult || !data.codeResult.code) return;
+      const code = String(data.codeResult.code).trim();
+      if (!/^\d{13}$/.test(code)) return;
+      handleDetection(code);
+    }
+
+    // ------------- comune: detection -------------
+    function handleDetection(code) {
+      const now = Date.now();
+      if (lastSent.code === code && (now - lastSent.time) < 1000) return; // debounce 1s
+      lastSent = { code, time: now };
+
+      // feedback
+      confirmEffect();
+      els.lastScan.textContent = `Ultimo EAN: ${code}`;
+      sessionCount++; updateCounter();
+
+      // invia
+      sendCode(code).catch(handleError);
+    }
+
+    function updateCounter() {
+      els.counter.textContent = `Scansioni questa sessione: ${sessionCount}`;
     }
 
     function confirmEffect() {
@@ -283,11 +407,9 @@
       if (els.beepToggle.checked) {
         try {
           if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          const o = audioCtx.createOscillator();
-          const g = audioCtx.createGain();
-          o.type = "square"; o.frequency.value = 900;
-          g.gain.value = 0.0001;
-          o.connect(g); g.connect(audioCtx.destination);
+          const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+          o.type = "square"; o.frequency.value = 920;
+          g.gain.value = 0.0001; o.connect(g); g.connect(audioCtx.destination);
           o.start();
           const t0 = audioCtx.currentTime;
           g.gain.exponentialRampToValueAtTime(0.22, t0 + 0.01);
@@ -310,39 +432,6 @@
         els.status.innerHTML = `<span class="ok">Registrato ✔️ — pronto per il prossimo</span>`;
       } else {
         throw new Error(json.error || "Errore server");
-      }
-    }
-
-    async function toggleTorch() {
-      if (!streamTrack) return;
-      try {
-        const caps = streamTrack.getCapabilities?.() || {};
-        if (!caps.torch) { els.error.textContent = "Torcia non supportata."; return; }
-        const on = streamTrack.getSettings().torch || false;
-        await streamTrack.applyConstraints({ advanced: [{ torch: !on }] });
-        els.torchBtn.textContent = `Torcia: ${!on ? "On" : "Off"}`;
-      } catch (e) { handleError(e); }
-    }
-
-    function onZoomInput() {
-      const z = parseFloat(els.zoom.value);
-      els.zoomValue.textContent = `${z.toFixed(1)}×`;
-      applyZoom(z).catch(handleError);
-    }
-
-    async function applyZoom(z, quiet=false) {
-      if (!streamTrack) return;
-      try {
-        const caps = streamTrack.getCapabilities?.() || {};
-        if (!("zoom" in caps)) {
-          if (!quiet) els.error.textContent = "Zoom non supportato da questa camera.";
-          return;
-        }
-        const min = caps.zoom.min ?? 1, max = caps.zoom.max ?? 5;
-        const clamped = Math.max(min, Math.min(max, z));
-        await streamTrack.applyConstraints({ advanced: [{ zoom: clamped }] });
-      } catch (e) {
-        if (!quiet) throw e;
       }
     }
 
