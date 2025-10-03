@@ -3,30 +3,37 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Scanner Inventario Ruffino</title>
+  <title>Scanner Inventario Ruffino — EAN Cassa</title>
   <script src="https://unpkg.com/@zxing/library@latest"></script>
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 14px; }
     h1 { margin: 0 0 12px; }
-    .card { border: 1px solid #ccc; border-radius: 10px; padding: 16px; max-width: 700px; }
+    .card { border: 1px solid #ccc; border-radius: 12px; padding: 14px; max-width: 720px; }
     label { display:block; margin: 6px 0 4px; font-weight: 600; }
     input, select, button { font-size: 16px; padding: 10px; box-sizing: border-box; }
     button { cursor: pointer; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    video { width: 100%; max-width: 700px; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid #999; background: #000; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    video { width: 100%; max-width: 720px; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid #999; background: #000; }
     .muted { color: #666; font-size: 14px; }
     .ok { color: #0a7; }
     .err { color: #c00; white-space: pre-wrap; }
     #scanner-section { display:none; }
     #status { margin-top: 8px; }
-    #last-scan { margin-top: 8px; font-weight: 700; }
-    .controls { display:flex; gap:8px; flex-wrap:wrap; }
-    .controls > * { flex: 1; min-width: 180px; }
+    #last-scan { margin-top: 8px; font-weight: 700; font-size: 18px; }
+    #counter { margin-top: 6px; font-size: 15px; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom: 8px; }
+    .controls > * { flex: 1; min-width: 160px; }
+    /* flash “cassa”: overlay verde per conferma */
+    #flash {
+      position: fixed; inset: 0; background: rgba(0,200,0,0.35);
+      pointer-events: none; opacity: 0; transition: opacity 120ms ease;
+    }
+    #flash.show { opacity: 1; }
   </style>
 </head>
 <body>
-  <h1>📦 Scanner Inventario Ruffino</h1>
+  <h1>📦 Scanner Inventario Ruffino — Cassa</h1>
 
   <div id="login-section" class="card">
     <p><b>Accesso</b></p>
@@ -52,32 +59,47 @@
         <label>&nbsp;</label>
         <button id="torch-btn">Torcia: Off</button>
       </div>
+      <div>
+        <label>&nbsp;</label>
+        <label style="display:flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="beep-toggle" checked />
+          BIP audio
+        </label>
+      </div>
     </div>
 
-    <h3 style="margin-top:12px;">📷 Inquadra un codice a barre</h3>
     <video id="video" playsinline muted autoplay></video>
 
     <div id="status" class="muted">In attesa permesso fotocamera…</div>
     <div id="last-scan"></div>
+    <div id="counter" class="muted">Scansioni questa sessione: 0</div>
     <div id="error" class="err"></div>
 
     <details style="margin-top:10px;">
-      <summary>Consigli rapidi</summary>
+      <summary>Note</summary>
       <ul class="muted">
-        <li>Illuminazione buona, niente riflessi.</li>
-        <li>Allontana/avvicina finché il codice occupa ~60–80% della larghezza.</li>
-        <li>Prova a ruotare il codice se è orizzontale/verticale.</li>
+        <li>Legge solo <b>EAN-13</b> per velocità/precisione.</li>
+        <li>HTTPS richiesto (GitHub Pages va bene).</li>
+        <li>Se hai più fotocamere, scegli la “posteriore” e premi <i>Cambia/riavvia</i>.</li>
       </ul>
     </details>
   </div>
 
+  <!-- overlay “flash” -->
+  <div id="flash"></div>
+
   <script>
+    // === CONFIG ===
     const ENDPOINT = "https://script.google.com/macros/s/AKfycbx_aDKqFr15qhLoZvSV3aAo7hbzKNtJ73LLIWgZrq2xLm3ONjxJhigHwbi19qb1DdIq0w/exec";
+    // ==============
 
     let codeReader = null;
     let currentDeviceId = null;
-    let scanning = false;
-    let streamTrack = null; // per torcia
+    let streamTrack = null;
+    let scanningEnabled = true;
+    let lastSent = { code: null, time: 0 };
+    let sessionCount = 0;
+    let audioCtx = null;
 
     const els = {
       loginSection: document.getElementById('login-section'),
@@ -88,11 +110,14 @@
       cameraSelect: document.getElementById('cameraSelect'),
       restartBtn: document.getElementById('restart-btn'),
       torchBtn: document.getElementById('torch-btn'),
+      beepToggle: document.getElementById('beep-toggle'),
       status: document.getElementById('status'),
       lastScan: document.getElementById('last-scan'),
+      counter: document.getElementById('counter'),
       error: document.getElementById('error'),
       username: document.getElementById('username'),
       password: document.getElementById('password'),
+      flash: document.getElementById('flash'),
     };
 
     els.loginBtn.addEventListener('click', doLogin);
@@ -102,27 +127,24 @@
     async function doLogin() {
       const u = els.username.value.trim();
       const p = els.password.value.trim();
-      if (!u || !p) {
-        els.loginMsg.textContent = "Inserisci utente e password.";
-        return;
-      }
+      if (!u || !p) { els.loginMsg.textContent = "Inserisci utente e password."; return; }
       window._username = u;
       window._password = p;
+
+      // inizializza audio su gesture utente (iOS)
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await audioCtx.resume();
+      } catch { /* ok se fallisce, riproveremo al beep */ }
+
       els.loginSection.style.display = 'none';
       els.scannerSection.style.display = 'block';
       await initScanner();
     }
 
-    function buildHints() {
-      // Restringiamo i formati per migliorare precisione/velocità
+    function buildHintsEAN13() {
       const hints = new Map();
-      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-        ZXing.BarcodeFormat.EAN_13,
-        ZXing.BarcodeFormat.EAN_8,
-        ZXing.BarcodeFormat.UPC_A,
-        ZXing.BarcodeFormat.CODE_128
-      ]);
-      // opzionale: TRY_HARDER
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ ZXing.BarcodeFormat.EAN_13 ]);
       hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
       return hints;
     }
@@ -130,14 +152,12 @@
     async function initScanner() {
       els.status.textContent = "Richiesta permesso fotocamera…";
       els.error.textContent = "";
-      try {
-        codeReader = new ZXing.BrowserMultiFormatReader(buildHints());
 
-        // elenco device
+      try {
+        codeReader = new ZXing.BrowserMultiFormatReader(buildHintsEAN13());
+
         const devices = await codeReader.listVideoInputDevices();
-        if (!devices || devices.length === 0) {
-          throw new Error("Nessuna fotocamera rilevata. Controlla i permessi del browser.");
-        }
+        if (!devices || devices.length === 0) throw new Error("Nessuna fotocamera rilevata.");
 
         // popola select
         els.cameraSelect.innerHTML = "";
@@ -149,7 +169,7 @@
         });
 
         // preferisci posteriore
-        let back = devices.find(d => /back|rear|posteriore/i.test(d.label || ""));
+        const back = devices.find(d => /back|rear|posteriore/i.test(d.label || ""));
         currentDeviceId = back ? back.deviceId : devices[0].deviceId;
         els.cameraSelect.value = currentDeviceId;
 
@@ -163,15 +183,14 @@
       els.status.textContent = "Avvio scanner…";
       els.error.textContent = "";
       els.lastScan.textContent = "";
-      scanning = true;
+      scanningEnabled = true;
 
       els.video.setAttribute('playsinline', 'true');
       els.video.setAttribute('muted', 'true');
 
-      // Chiudi flussi precedenti
       try { await codeReader.reset(); } catch {}
 
-      // Usa constraints esplicite per qualità + camera posteriore
+      // constraints per qualità e camera “environment”
       const constraints = {
         audio: false,
         video: {
@@ -179,58 +198,90 @@
           facingMode: deviceId ? undefined : { ideal: "environment" },
           width: { ideal: 1280 },
           height: { ideal: 720 },
-          focusMode: "continuous" // alcuni browser lo ignorano
+          focusMode: "continuous"
         }
       };
 
       try {
-        await codeReader.decodeFromConstraints(constraints, els.video, onScanResult);
+        await codeReader.decodeFromConstraints(constraints, els.video, onScanFrame);
 
-        // salva track per torcia
+        // salva track (per torcia)
         const s = els.video.srcObject;
-        if (s && s.getVideoTracks().length) {
-          streamTrack = s.getVideoTracks()[0];
-        }
+        if (s && s.getVideoTracks().length) streamTrack = s.getVideoTracks()[0];
         updateTorchUi();
-        els.status.innerHTML = '<span class="ok">Scanner attivo ✔️</span>';
+
+        els.status.innerHTML = '<span class="ok">Scanner attivo ✔️ — passa i prodotti davanti</span>';
       } catch (err) {
         handleError(err);
       }
     }
 
-    function onScanResult(result, err) {
+    function onScanFrame(result, err) {
       if (result) {
-        const codice = result.getText();
-        els.lastScan.textContent = `Ultimo codice: ${codice}`;
-        if (scanning) {
-          scanning = false; // debounce
-          sendCode(codice).finally(() => setTimeout(() => (scanning = true), 800));
-        }
+        const codice = result.getText().trim();
+
+        // EAN-13 deve essere 13 cifre
+        if (!/^\d{13}$/.test(codice)) return;
+
+        // evita dup entro 2s
+        const now = Date.now();
+        if (lastSent.code === codice && (now - lastSent.time) < 2000) return;
+
+        lastSent = { code: codice, time: now };
+        confirmEffect();            // bip + vibrazione + flash
+        els.lastScan.textContent = `Ultimo EAN: ${codice}`;
+        sessionCount++;
+        els.counter.textContent = `Scansioni questa sessione: ${sessionCount}`;
+
+        // invia al foglio
+        sendCode(codice).catch(handleError);
       }
       if (err && !(err instanceof ZXing.NotFoundException)) {
         console.warn(err);
       }
     }
 
+    function confirmEffect() {
+      // BIP
+      if (els.beepToggle.checked) {
+        try {
+          if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const o = audioCtx.createOscillator();
+          const g = audioCtx.createGain();
+          o.type = "square";
+          o.frequency.value = 880; // A5
+          g.gain.value = 0.0001;
+          o.connect(g); g.connect(audioCtx.destination);
+          o.start();
+          // inviluppo rapido “bip”
+          const now = audioCtx.currentTime;
+          g.gain.exponentialRampToValueAtTime(0.2, now + 0.01);
+          g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+          o.stop(now + 0.2);
+        } catch {}
+      }
+      // vibrazione (se supportata)
+      if (navigator.vibrate) navigator.vibrate(60);
+      // flash verde
+      els.flash.classList.add('show');
+      setTimeout(() => els.flash.classList.remove('show'), 120);
+    }
+
     async function sendCode(codice) {
       els.status.textContent = "Invio al foglio…";
-      try {
-        const resp = await fetch(ENDPOINT, {
-          method: "POST",
-          body: JSON.stringify({
-            username: window._username,
-            password: window._password,
-            codice
-          }),
-        });
-        const json = await resp.json();
-        if (json.success) {
-          els.status.innerHTML = `<span class="ok">Registrato ✔️</span>`;
-        } else {
-          handleError(new Error(json.error || "Errore server"));
-        }
-      } catch (e) {
-        handleError(e);
+      const resp = await fetch(ENDPOINT, {
+        method: "POST",
+        body: JSON.stringify({
+          username: window._username,
+          password: window._password,
+          codice
+        }),
+      });
+      const json = await resp.json();
+      if (json.success) {
+        els.status.innerHTML = `<span class="ok">Registrato ✔️ — pronto per il prossimo</span>`;
+      } else {
+        throw new Error(json.error || "Errore server");
       }
     }
 
@@ -238,27 +289,22 @@
       if (!streamTrack) return;
       try {
         const cap = streamTrack.getCapabilities ? streamTrack.getCapabilities() : {};
-        if (!cap.torch) {
-          els.error.textContent = "Torcia non supportata su questa camera.";
-          return;
-        }
+        if (!cap.torch) { els.error.textContent = "Torcia non supportata su questa camera."; return; }
         const curr = streamTrack.getSettings().torch || false;
         await streamTrack.applyConstraints({ advanced: [{ torch: !curr }] });
         updateTorchUi();
-      } catch (e) {
-        handleError(e);
-      }
+      } catch (e) { handleError(e); }
     }
 
     function updateTorchUi() {
       if (!streamTrack) { els.torchBtn.textContent = "Torcia: Off"; return; }
-      const settings = streamTrack.getSettings ? streamTrack.getSettings() : {};
-      els.torchBtn.textContent = `Torcia: ${settings.torch ? "On" : "Off"}`;
+      const s = streamTrack.getSettings ? streamTrack.getSettings() : {};
+      els.torchBtn.textContent = `Torcia: ${s.torch ? "On" : "Off"}`;
     }
 
     function handleError(e) {
       console.error(e);
-      els.error.textContent = e.message || String(e);
+      els.error.textContent = (e && e.message) ? e.message : String(e);
       els.status.textContent = "Errore.";
       if (/NotAllowedError|Permission/i.test(els.error.textContent)) {
         els.error.textContent += "\nConcedi il permesso fotocamera (Impostazioni sito → Fotocamera: Consenti).";
