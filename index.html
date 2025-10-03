@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Inventario Ruffino — EAN Turbo (fix layout/orientamento)</title>
+  <title>Inventario Ruffino — EAN Turbo (Quagga2 fix)</title>
+
   <!-- ZXing (UMD) -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
-  <!-- Quagga (aggressivo per 1D) -->
-  <script src="https://unpkg.com/quagga@0.12.1/dist/quagga.min.js"></script>
+  <!-- Quagga2 (fork mantenuto) -->
+  <script src="https://unpkg.com/@ericblade/quagga2@1.2.6/dist/quagga.min.js"></script>
+
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 14px; }
@@ -29,13 +31,12 @@
     #last-scan { margin-top: 8px; font-weight: 700; font-size: 18px; }
     #counter { margin-top: 6px; font-size: 15px; }
 
-    /* Viewport unico per video+overlay (sia ZXing che Quagga) */
+    /* Viewport unico per video+overlay */
     .viewport {
       position: relative;
       width: 100%;
       max-width: 820px;
       margin-inline: auto;
-      /* Manteniamo 16:9 */
       aspect-ratio: 16 / 9;
       background: #000;
       border: 1px solid #999;
@@ -43,19 +44,17 @@
       overflow: hidden;
     }
 
-    /* Elementi video/canvas riempiono il contenitore */
     .viewport video,
     .viewport canvas {
       position: absolute;
       inset: 0;
       width: 100%;
       height: 100%;
-      object-fit: cover;           /* riempi senza distorcere */
-      transform-origin: 50% 50%;   /* utile per la rotazione */
+      object-fit: cover;
+      transform-origin: 50% 50%;
       background: #000;
     }
 
-    /* Overlay tratteggiato (sempre uno solo) */
     .aim {
       pointer-events: none;
       position: absolute;
@@ -65,14 +64,12 @@
       z-index: 5;
     }
 
-    /* flash conferma */
-    #flash { position: fixed; inset: 0; background: rgba(0,200,0,0.35); pointer-events: none; opacity: 0; transition: opacity 120ms ease;}
+    #flash { position: fixed; inset: 0; background: rgba(0,200,0,0.35); pointer-events: none; opacity: 0; transition: opacity 120ms ease; }
     #flash.show { opacity: 1; }
 
     .range-row { display:flex; align-items:center; gap:8px; }
     .range-row input[type="range"] { flex: 1; }
 
-    /* Classe per ruotare di 90° l’intero viewport (video + quagga) */
     .rot90 .viewport video,
     .rot90 .viewport canvas,
     .rot90 .viewport .quagga-video,
@@ -100,7 +97,7 @@
         <label for="engine">Motore</label>
         <select id="engine">
           <option value="zxing" selected>ZXing (torcia/zoom)</option>
-          <option value="quagga">Quagga (aggressivo EAN)</option>
+          <option value="quagga">Quagga2 (aggressivo EAN)</option>
         </select>
       </div>
       <div>
@@ -134,9 +131,9 @@
       <span id="zoomValue" class="muted">1.8×</span>
     </div>
 
-    <!-- Viewport unico; per ZXing usiamo il <video>; per Quagga Quagga inserirà i suoi elementi qui -->
     <div id="stage" class="stage">
       <div class="viewport" id="viewport">
+        <!-- ZXing usa questo video; Quagga2 inserirà i suoi elementi dentro #viewport -->
         <video id="video" playsinline muted autoplay></video>
         <div class="aim"></div>
       </div>
@@ -165,13 +162,13 @@
     // ==============
 
     let engine = 'zxing';
-    let codeReader = null;   // ZXing
+    let codeReader = null;           // ZXing
     let streamTrack = null;
     let currentDeviceId = null;
     let audioCtx = null;
     let sessionCount = 0;
     let lastSent = { code: null, time: 0 };
-    let rotated = false; // stato rotazione 90°
+    let rotated = false;
 
     const els = {
       loginSection: document.getElementById('login-section'),
@@ -197,24 +194,15 @@
       engine: document.getElementById('engine'),
     };
 
-    // UI handlers
     els.loginBtn.addEventListener('click', doLogin);
     els.restartBtn.addEventListener('click', restartEngine);
-    els.rotateBtn.addEventListener('click', () => {
-      rotated = !rotated;
-      toggleRotation();
-    });
+    els.rotateBtn.addEventListener('click', () => { rotated = !rotated; toggleRotation(); });
     els.torchBtn.addEventListener('click', toggleTorch);
     els.zoom.addEventListener('input', onZoomInput);
     els.engine.addEventListener('change', async () => { engine = els.engine.value; await restartEngine(); });
 
     function toggleRotation() {
-      // Applichiamo/ritiriamo la classe rot90 sul contenitore esterno
-      if (rotated) {
-        els.stage.classList.add('rot90');
-      } else {
-        els.stage.classList.remove('rot90');
-      }
+      if (rotated) els.stage.classList.add('rot90'); else els.stage.classList.remove('rot90');
     }
 
     async function doLogin() {
@@ -236,7 +224,6 @@
       sessionCount = 0; updateCounter();
       lastSent = { code: null, time: 0 };
 
-      // lista dispositivi video
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
         const cams = devices.filter(d => d.kind === 'videoinput');
@@ -261,29 +248,21 @@
     }
 
     async function startEngine() {
-      // pulisci viewport da residui Quagga
       cleanupQuaggaDom();
-      // Mostra il video solo per ZXing; Quagga aggiunge da sé i suoi elementi
       els.video.style.display = (engine === 'zxing') ? 'block' : 'none';
-      els.status.textContent = engine === 'zxing'
-        ? "Avvio ZXing…"
-        : "Avvio Quagga…";
-      rotated = false;
-      toggleRotation();
+      els.status.textContent = engine === 'zxing' ? "Avvio ZXing…" : "Avvio Quagga2…";
+      rotated = false; toggleRotation();
 
       if (engine === 'zxing') await startZXing();
-      else await startQuagga();
+      else await startQuagga2();
     }
 
     async function stopAll() {
       els.status.textContent = "Arresto motore…";
       els.error.textContent = "";
-      // ZXing
       try { if (codeReader) await codeReader.reset(); } catch {}
-      // Quagga
       try { if (window.Quagga && Quagga.stop) Quagga.stop(); } catch {}
       cleanupQuaggaDom();
-      // Stream track comune
       try {
         if (streamTrack) { streamTrack.stop(); streamTrack = null; }
         if (els.video.srcObject) {
@@ -294,12 +273,12 @@
     }
 
     function cleanupQuaggaDom() {
-      // Quagga inserisce elementi dentro #viewport. Li rimuoviamo quando cambiamo motore.
-      const toKill = els.viewport.querySelectorAll('.drawingBuffer, .quagga-video, .quagga-canvas, .overlay, video:not(#video), canvas');
+      // Rimuove video/canvas aggiunti da Quagga
+      const toKill = els.viewport.querySelectorAll('video:not(#video), canvas, .drawingBuffer, .overlay, .quagga-video, .quagga-canvas');
       toKill.forEach(n => n.remove());
     }
 
-    // ---------------- ZXING ----------------
+    // ------------ ZXING ------------
     function buildHintsEAN13() {
       const hints = new Map();
       hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ ZXing.BarcodeFormat.EAN_13 ]);
@@ -309,7 +288,6 @@
 
     async function startZXing() {
       codeReader = new ZXing.BrowserMultiFormatReader(buildHintsEAN13());
-
       const constraints = {
         audio: false,
         video: {
@@ -325,12 +303,9 @@
 
       try {
         await codeReader.decodeFromConstraints(constraints, els.video, onZXingFrame);
-
-        // track per torcia/zoom
         const s = els.video.srcObject;
         if (s && s.getVideoTracks().length) {
           streamTrack = s.getVideoTracks()[0];
-          // auto torcia ON se disponibile
           try {
             const caps = streamTrack.getCapabilities?.() || {};
             if (caps.torch) {
@@ -342,7 +317,6 @@
             await applyZoom(parseFloat(els.zoom.value), true);
           } catch {}
         }
-
         els.status.innerHTML = '<span class="ok">ZXing attivo ✔️</span>';
       } catch (err) { handleError(err); }
     }
@@ -384,23 +358,23 @@
       } catch (e) { if (!quiet) throw e; }
     }
 
-    // ---------------- QUAGGA ----------------
-    async function startQuagga() {
+    // ------------ QUAGGA2 ------------
+    async function startQuagga2() {
       const config = {
         inputStream: {
           type: "LiveStream",
-          target: document.getElementById("viewport"), // un solo contenitore
+          target: document.getElementById("viewport"),
           constraints: {
             facingMode: "environment",
             deviceId: currentDeviceId || undefined,
             width: { ideal: 1920 },
             height: { ideal: 1080 }
           },
-          area: { top: "12%", right: "12%", left: "12%", bottom: "12%" } // match overlay
+          area: { top: "12%", right: "12%", left: "12%", bottom: "12%" }
         },
         locator: { patchSize: "x-large", halfSample: false },
         numOfWorkers: navigator.hardwareConcurrency ? Math.min(4, navigator.hardwareConcurrency) : 2,
-        frequency: 10,
+        frequency: 12,
         decoder: { readers: [{ format: "ean_reader", config: {} }] },
         locate: true
       };
@@ -409,13 +383,21 @@
         Quagga.init(config, (err) => {
           if (err) { handleError(err); resolve(); return; }
 
-          // classi per assicurare che i video/canvas di quagga ereditino stile
-          const qv = document.querySelector("#viewport video");
-          const qc = document.querySelector("#viewport canvas");
-          if (qv) qv.classList.add('quagga-video');
-          if (qc) qc.classList.add('quagga-canvas');
+          // assicurati che il video iniettato abbia gli attributi giusti per iOS
+          setTimeout(() => {
+            const qv = document.querySelector("#viewport video:not(#video)");
+            if (qv) {
+              qv.classList.add('quagga-video');
+              qv.setAttribute('playsinline', 'true');
+              qv.setAttribute('autoplay', 'true');
+              qv.setAttribute('muted', 'true');
+              qv.style.objectFit = 'cover';
+            }
+            const qc = document.querySelector("#viewport canvas");
+            if (qc) qc.classList.add('quagga-canvas');
+          }, 0);
 
-          // salva track (se accessibile)
+          // salva track attiva (se disponibile)
           try {
             const track = Quagga.CameraAccess && Quagga.CameraAccess.getActiveTrack
               ? Quagga.CameraAccess.getActiveTrack()
@@ -425,7 +407,7 @@
 
           Quagga.onDetected(onQuaggaDetected);
           Quagga.start();
-          els.status.innerHTML = '<span class="ok">Quagga attivo ✔️</span>';
+          els.status.innerHTML = '<span class="ok">Quagga2 attivo ✔️</span>';
           resolve();
         });
       });
@@ -438,10 +420,10 @@
       handleDetection(code);
     }
 
-    // ------------- comune: detection -------------
+    // ------------ comune ------------
     function handleDetection(code) {
       const now = Date.now();
-      if (lastSent.code === code && (now - lastSent.time) < 900) return; // debounce ~1s
+      if (lastSent.code === code && (now - lastSent.time) < 900) return;
       lastSent = { code, time: now };
 
       confirmEffect();
@@ -451,12 +433,9 @@
       sendCode(code).catch(handleError);
     }
 
-    function updateCounter() {
-      els.counter.textContent = `Scansioni questa sessione: ${sessionCount}`;
-    }
+    function updateCounter() { els.counter.textContent = `Scansioni questa sessione: ${sessionCount}`; }
 
     function confirmEffect() {
-      // bip
       if (els.beepToggle.checked) {
         try {
           if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
