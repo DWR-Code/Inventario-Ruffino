@@ -2,28 +2,27 @@
 <html lang="it">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Scanner Inventario Ruffino</title>
-
-  <!-- ZXing UMD (globale: ZXing) -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
-
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
     h1 { margin: 0 0 12px; }
-    .card { border: 1px solid #ccc; border-radius: 10px; padding: 16px; max-width: 640px; }
+    .card { border: 1px solid #ccc; border-radius: 10px; padding: 16px; max-width: 700px; }
     label { display:block; margin: 6px 0 4px; font-weight: 600; }
-    input, select, button { font-size: 16px; padding: 10px; width: 100%; box-sizing: border-box; }
+    input, select, button { font-size: 16px; padding: 10px; box-sizing: border-box; }
     button { cursor: pointer; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    video { width: 100%; max-width: 640px; border-radius: 12px; border: 1px solid #999; background: #000; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    video { width: 100%; max-width: 700px; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid #999; background: #000; }
     .muted { color: #666; font-size: 14px; }
     .ok { color: #0a7; }
     .err { color: #c00; white-space: pre-wrap; }
     #scanner-section { display:none; }
     #status { margin-top: 8px; }
-    #last-scan { margin-top: 8px; font-weight: 600; }
+    #last-scan { margin-top: 8px; font-weight: 700; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; }
+    .controls > * { flex: 1; min-width: 180px; }
   </style>
 </head>
 <body>
@@ -33,16 +32,14 @@
     <p><b>Accesso</b></p>
     <label for="username">Utente</label>
     <input id="username" type="text" placeholder="Emporio" autocomplete="username" />
-
     <label for="password">Password</label>
     <input id="password" type="password" placeholder="Lallero" autocomplete="current-password" />
-
     <button id="login-btn" style="margin-top:10px;">Entra</button>
     <div id="login-msg" class="muted"></div>
   </div>
 
   <div id="scanner-section" class="card">
-    <div class="row">
+    <div class="controls">
       <div>
         <label for="cameraSelect">Sorgente video</label>
         <select id="cameraSelect"></select>
@@ -50,6 +47,10 @@
       <div>
         <label>&nbsp;</label>
         <button id="restart-btn">Cambia/riavvia camera</button>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="torch-btn">Torcia: Off</button>
       </div>
     </div>
 
@@ -61,23 +62,22 @@
     <div id="error" class="err"></div>
 
     <details style="margin-top:10px;">
-      <summary>Impostazioni e note</summary>
+      <summary>Consigli rapidi</summary>
       <ul class="muted">
-        <li>HTTPS richiesto per usare la fotocamera (GitHub Pages è ok).</li>
-        <li>iOS: verifica che Safari abbia permesso la fotocamera per questo sito.</li>
-        <li>Se hai più fotocamere, usa il menu per selezionare “back” / “posteriore”.</li>
+        <li>Illuminazione buona, niente riflessi.</li>
+        <li>Allontana/avvicina finché il codice occupa ~60–80% della larghezza.</li>
+        <li>Prova a ruotare il codice se è orizzontale/verticale.</li>
       </ul>
     </details>
   </div>
 
   <script>
-    // 👇👇 CONFIG 👇👇
     const ENDPOINT = "https://script.google.com/macros/s/AKfycbx_aDKqFr15qhLoZvSV3aAo7hbzKNtJ73LLIWgZrq2xLm3ONjxJhigHwbi19qb1DdIq0w/exec";
-    // 👆👆 CONFIG 👆👆
 
     let codeReader = null;
     let currentDeviceId = null;
     let scanning = false;
+    let streamTrack = null; // per torcia
 
     const els = {
       loginSection: document.getElementById('login-section'),
@@ -87,6 +87,7 @@
       video: document.getElementById('video'),
       cameraSelect: document.getElementById('cameraSelect'),
       restartBtn: document.getElementById('restart-btn'),
+      torchBtn: document.getElementById('torch-btn'),
       status: document.getElementById('status'),
       lastScan: document.getElementById('last-scan'),
       error: document.getElementById('error'),
@@ -96,6 +97,7 @@
 
     els.loginBtn.addEventListener('click', doLogin);
     els.restartBtn.addEventListener('click', () => startScanner(els.cameraSelect.value));
+    els.torchBtn.addEventListener('click', toggleTorch);
 
     async function doLogin() {
       const u = els.username.value.trim();
@@ -111,34 +113,44 @@
       await initScanner();
     }
 
+    function buildHints() {
+      // Restringiamo i formati per migliorare precisione/velocità
+      const hints = new Map();
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+        ZXing.BarcodeFormat.EAN_13,
+        ZXing.BarcodeFormat.EAN_8,
+        ZXing.BarcodeFormat.UPC_A,
+        ZXing.BarcodeFormat.CODE_128
+      ]);
+      // opzionale: TRY_HARDER
+      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+      return hints;
+    }
+
     async function initScanner() {
       els.status.textContent = "Richiesta permesso fotocamera…";
       els.error.textContent = "";
       try {
-        // ZXing setup
-        codeReader = new ZXing.BrowserMultiFormatReader();
+        codeReader = new ZXing.BrowserMultiFormatReader(buildHints());
 
-        // *** Richiedi device list ***
+        // elenco device
         const devices = await codeReader.listVideoInputDevices();
-
         if (!devices || devices.length === 0) {
-          throw new Error("Nessuna fotocamera rilevata. Verifica i permessi del browser e che il dispositivo abbia una camera.");
+          throw new Error("Nessuna fotocamera rilevata. Controlla i permessi del browser.");
         }
 
-        // Popola select
+        // popola select
         els.cameraSelect.innerHTML = "";
         devices.forEach(d => {
           const opt = document.createElement('option');
           opt.value = d.deviceId;
-          opt.textContent = d.label || `Camera ${d.deviceId.substring(0,6)}…`;
+          opt.textContent = d.label || `Camera ${d.deviceId.slice(0,6)}…`;
           els.cameraSelect.appendChild(opt);
         });
 
-        // Prova a scegliere la posteriore
-        let backCam = devices.find(d =>
-          /back|rear|posteriore/i.test(d.label || "")
-        );
-        currentDeviceId = backCam ? backCam.deviceId : devices[0].deviceId;
+        // preferisci posteriore
+        let back = devices.find(d => /back|rear|posteriore/i.test(d.label || ""));
+        currentDeviceId = back ? back.deviceId : devices[0].deviceId;
         els.cameraSelect.value = currentDeviceId;
 
         await startScanner(currentDeviceId);
@@ -148,21 +160,38 @@
     }
 
     async function startScanner(deviceId) {
-      if (!codeReader) codeReader = new ZXing.BrowserMultiFormatReader();
       els.status.textContent = "Avvio scanner…";
       els.error.textContent = "";
       els.lastScan.textContent = "";
       scanning = true;
 
-      // iOS: assicurati che il video sia pronto per inline playback
       els.video.setAttribute('playsinline', 'true');
       els.video.setAttribute('muted', 'true');
-      try {
-        await codeReader.reset(); // stop di eventuali stream precedenti
-      } catch {}
+
+      // Chiudi flussi precedenti
+      try { await codeReader.reset(); } catch {}
+
+      // Usa constraints esplicite per qualità + camera posteriore
+      const constraints = {
+        audio: false,
+        video: {
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          facingMode: deviceId ? undefined : { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          focusMode: "continuous" // alcuni browser lo ignorano
+        }
+      };
 
       try {
-        await codeReader.decodeFromVideoDevice(deviceId || null, els.video, onScanResult);
+        await codeReader.decodeFromConstraints(constraints, els.video, onScanResult);
+
+        // salva track per torcia
+        const s = els.video.srcObject;
+        if (s && s.getVideoTracks().length) {
+          streamTrack = s.getVideoTracks()[0];
+        }
+        updateTorchUi();
         els.status.innerHTML = '<span class="ok">Scanner attivo ✔️</span>';
       } catch (err) {
         handleError(err);
@@ -173,17 +202,12 @@
       if (result) {
         const codice = result.getText();
         els.lastScan.textContent = `Ultimo codice: ${codice}`;
-        // Debounce: evita richieste duplicate se la camera lo “vede” più volte
         if (scanning) {
-          scanning = false;
-          sendCode(codice).finally(() => {
-            // riabilita dopo un attimo
-            setTimeout(() => { scanning = true; }, 800);
-          });
+          scanning = false; // debounce
+          sendCode(codice).finally(() => setTimeout(() => (scanning = true), 800));
         }
       }
       if (err && !(err instanceof ZXing.NotFoundException)) {
-        // Errori non “not found” (normale durante la scansione)
         console.warn(err);
       }
     }
@@ -210,16 +234,37 @@
       }
     }
 
+    async function toggleTorch() {
+      if (!streamTrack) return;
+      try {
+        const cap = streamTrack.getCapabilities ? streamTrack.getCapabilities() : {};
+        if (!cap.torch) {
+          els.error.textContent = "Torcia non supportata su questa camera.";
+          return;
+        }
+        const curr = streamTrack.getSettings().torch || false;
+        await streamTrack.applyConstraints({ advanced: [{ torch: !curr }] });
+        updateTorchUi();
+      } catch (e) {
+        handleError(e);
+      }
+    }
+
+    function updateTorchUi() {
+      if (!streamTrack) { els.torchBtn.textContent = "Torcia: Off"; return; }
+      const settings = streamTrack.getSettings ? streamTrack.getSettings() : {};
+      els.torchBtn.textContent = `Torcia: ${settings.torch ? "On" : "Off"}`;
+    }
+
     function handleError(e) {
       console.error(e);
       els.error.textContent = e.message || String(e);
       els.status.textContent = "Errore.";
-      // Suggerimenti frequenti
       if (/NotAllowedError|Permission/i.test(els.error.textContent)) {
-        els.error.textContent += "\nConcedi il permesso fotocamera al sito (Impostazioni del browser → Fotocamera).";
+        els.error.textContent += "\nConcedi il permesso fotocamera (Impostazioni sito → Fotocamera: Consenti).";
       }
       if (/NotFoundError|device not found/i.test(els.error.textContent)) {
-        els.error.textContent += "\nNessuna camera trovata o permesso negato. Verifica che la pagina sia in HTTPS e riprova.";
+        els.error.textContent += "\nNessuna camera trovata o permesso negato. HTTPS richiesto.";
       }
     }
   </script>
