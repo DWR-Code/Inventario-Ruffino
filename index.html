@@ -3,8 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Inventario Ruffino — EAN (AF multi-camera)</title>
+  <title>Inventario Ruffino — EAN (universale con fallback nativo)</title>
+
+  <!-- ZXing (UMD) -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
+
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 14px; }
@@ -22,20 +25,43 @@
     #status { margin-top: 8px; }
     #last-scan { margin-top: 8px; font-weight: 700; font-size: 18px; }
     #counter { margin-top: 6px; font-size: 15px; }
-    .viewport { position: relative; width: 100%; max-width: 860px; margin-inline: auto; aspect-ratio: 16/9; background: #000; border: 1px solid #999; border-radius: 12px; overflow: hidden; }
-    .viewport video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform-origin: 50% 50%; background: #000; }
-    .aim { pointer-events: none; position: absolute; inset: 12%; border: 3px dashed rgba(0,255,0,0.35); border-radius: 10px; z-index: 5; }
+
+    /* viewport unico video+overlay */
+    .viewport {
+      position: relative;
+      width: 100%;
+      max-width: 860px;
+      margin-inline: auto;
+      aspect-ratio: 16/9;
+      background: #000;
+      border: 1px solid #999;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .viewport video {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; transform-origin: 50% 50%; background: #000;
+    }
+    .aim {
+      pointer-events: none;
+      position: absolute; inset: 12%;
+      border: 3px dashed rgba(0,255,0,0.35);
+      border-radius: 10px; z-index: 5;
+    }
     #flash { position: fixed; inset: 0; background: rgba(0,200,0,0.35); pointer-events: none; opacity: 0; transition: opacity 120ms ease; }
     #flash.show { opacity: 1; }
+
     .range-row { display:flex; align-items:center; gap:8px; }
     .range-row input[type="range"] { flex: 1; }
+
     .rot90 .viewport video { transform: rotate(90deg); }
+
     .pillbar { display:flex; gap:8px; flex-wrap:wrap; }
     .pillbar button { padding: 8px 12px; border-radius: 999px; border: 1px solid #aaa; background: #f3f3f3; }
   </style>
 </head>
 <body>
-  <h1>📦 Inventario Ruffino — EAN (AF multi-camera)</h1>
+  <h1>📦 Inventario Ruffino — EAN (universale)</h1>
 
   <div id="login-section" class="card">
     <p><b>Accesso</b></p>
@@ -57,6 +83,13 @@
         </label>
       </div>
       <div>
+        <label for="compatToggle">Modalità compatibilità</label>
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="compatToggle" />
+          Forza 1280×720 @ 30fps
+        </label>
+      </div>
+      <div>
         <label for="cameraSelect">Sorgente video (se logica OFF)</label>
         <select id="cameraSelect"></select>
       </div>
@@ -70,6 +103,7 @@
       </div>
       <div>
         <label>&nbsp;</label>
+        <!-- Torcia NON parte più in automatico -->
         <button id="torch-btn">Torcia: Off</button>
       </div>
       <div>
@@ -109,9 +143,10 @@
     <details style="margin-top:10px;">
       <summary>Consigli AF / multi-camera</summary>
       <ul class="muted">
-        <li>Con **Fotocamera logica** il telefono usa la pipeline multifocale → AF migliore.</li>
-        <li>Usa i preset **1× / 1.5× / 2× / 3×**: spesso 1.5–2× fa “saltare” alla lente giusta.</li>
-        <li>Buona luce; se serve usa **Torcia** (manuale).</li>
+        <li>Con <b>Fotocamera logica</b> il telefono usa la pipeline multifocale → AF migliore.</li>
+        <li>Usa i preset <b>1× / 1.5× / 2× / 3×</b>: spesso 1.5–2× fa “saltare” alla lente giusta.</li>
+        <li>Se alcuni modelli faticano, attiva <b>Modalità compatibilità</b>.</li>
+        <li>Buona luce; se serve usa <b>Torcia</b> (manuale).</li>
       </ul>
     </details>
   </div>
@@ -123,7 +158,8 @@
     const ENDPOINT = "https://script.google.com/macros/s/AKfycbx_aDKqFr15qhLoZvSV3aAo7hbzKNtJ73LLIWgZrq2xLm3ONjxJhigHwbi19qb1DdIq0w/exec";
     // ==============
 
-    let codeReader = null;
+    let usingNative = false;    // true se usiamo BarcodeDetector
+    let codeReader = null;      // ZXing
     let streamTrack = null;
     let currentDeviceId = null;
     let audioCtx = null;
@@ -132,6 +168,10 @@
     let rotated = false;
     let lastDecodeAt = 0;
     let autoZoomTimer = null;
+
+    // Rileva modelli “sensibili” e auto-abilita compatibilità
+    const ua = navigator.userAgent.toLowerCase();
+    const autoCompat = /sm-s90|s22|sm-s901|sm-s906|sm-s908|mate 20|ane-lx|huawei/.test(ua);
 
     const els = {
       loginSection: document.getElementById('login-section'),
@@ -143,6 +183,7 @@
       video: document.getElementById('video'),
       cameraSelect: document.getElementById('cameraSelect'),
       logicalToggle: document.getElementById('logicalToggle'),
+      compatToggle: document.getElementById('compatToggle'),
       restartBtn: document.getElementById('restart-btn'),
       rotateBtn: document.getElementById('rotate-btn'),
       torchBtn: document.getElementById('torch-btn'),
@@ -157,7 +198,7 @@
       zoomValue: document.getElementById('zoomValue'),
     };
 
-    // Preset zoom pillbar
+    // Preset zoom
     document.querySelectorAll('.pillbar [data-zoom]').forEach(btn => {
       btn.addEventListener('click', () => {
         els.zoom.value = btn.dataset.zoom;
@@ -165,13 +206,13 @@
       });
     });
 
+    // Eventi UI
     els.loginBtn.addEventListener('click', doLogin);
     els.restartBtn.addEventListener('click', restartEngine);
     els.rotateBtn.addEventListener('click', () => { rotated = !rotated; toggleRotation(); });
     els.torchBtn.addEventListener('click', toggleTorch);
     els.zoom.addEventListener('input', onZoomInput);
     els.logicalToggle.addEventListener('change', () => {
-      // se passo da logica ON a OFF, elenco device
       if (!els.logicalToggle.checked) enumerateCameras();
     });
 
@@ -185,7 +226,11 @@
       if (!u || !p) { els.loginMsg.textContent = "Inserisci utente e password."; return; }
       window._username = u; window._password = p;
 
+      // Audio init (iOS richiede gesture)
       try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); await audioCtx.resume(); } catch {}
+
+      // Auto-abilita compatibilità su device noti
+      if (autoCompat) els.compatToggle.checked = true;
 
       els.loginSection.style.display = 'none';
       els.scannerSection.style.display = 'block';
@@ -197,9 +242,10 @@
       els.error.textContent = "";
       sessionCount = 0; updateCounter();
       lastSent = { code: null, time: 0 };
+      lastDecodeAt = 0;
 
       if (!els.logicalToggle.checked) await enumerateCameras();
-      await startZXing();
+      await startScannerUniversal();  // <<< usa nativo se disponibile, altrimenti ZXing
     }
 
     async function enumerateCameras() {
@@ -221,12 +267,13 @@
 
     async function restartEngine() {
       await stopAll();
-      await startZXing();
+      await startScannerUniversal();
     }
 
     async function stopAll() {
       els.status.textContent = "Arresto…";
       els.error.textContent = "";
+      usingNative = false;
       if (autoZoomTimer) { clearInterval(autoZoomTimer); autoZoomTimer = null; }
       try { if (codeReader) await codeReader.reset(); } catch {}
       try {
@@ -238,6 +285,78 @@
       } catch {}
     }
 
+    // --------- UNIVERSAL STARTER: Native (if available) -> ZXing ---------
+    async function startScannerUniversal() {
+      els.status.textContent = "Avvio scanner…";
+      // 1) BarcodeDetector nativo (Chrome/Samsung Internet Android, ecc.)
+      if (window.BarcodeDetector) {
+        try {
+          const formats = ['ean_13','ean_8','upc_a'];
+          const detector = new BarcodeDetector({ formats });
+          await startNativeDetector(detector);   // se va, esce qui
+          usingNative = true;
+          els.status.innerHTML = '<span class="ok">Scanner nativo attivo ✔️</span>';
+          return;
+        } catch (e) {
+          console.warn('BarcodeDetector non disponibile/errore, passo a ZXing', e);
+        }
+      }
+      // 2) Fallback: ZXing
+      usingNative = false;
+      await startZXing();
+    }
+
+    // --------- NATIVE DETECTOR BRANCH ---------
+    async function startNativeDetector(detector) {
+      const logical = els.logicalToggle.checked;
+      const compat = els.compatToggle.checked;
+
+      // Costruisci constraints compatibili
+      const constraints = {
+        audio: false,
+        video: Object.assign(
+          {},
+          logical ? { facingMode: { ideal: 'environment' } }
+                  : (els.cameraSelect.value ? { deviceId: { exact: els.cameraSelect.value } }
+                                            : { facingMode: { ideal: 'environment' } }),
+          compat ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } }
+                 : { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 } }
+        )
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      els.video.srcObject = stream;
+      await els.video.play();
+
+      streamTrack = stream.getVideoTracks()[0] || null;
+      const caps = streamTrack?.getCapabilities?.() || {};
+      els.torchBtn.textContent = caps.torch ? "Torcia: Off" : "Torcia: N/D";
+      await applyZoom(parseFloat(els.zoom.value), true).catch(()=>{});
+
+      // loop polling nativo
+      lastDecodeAt = Date.now();
+      const tick = async () => {
+        if (!usingNative) return;
+        try {
+          const codes = await detector.detect(els.video);
+          if (codes && codes.length) {
+            const raw = String(codes[0].rawValue || '').trim();
+            if (/^(\d{8}|\d{12}|\d{13})$/.test(raw)) {
+              handleDetection(raw);
+              lastDecodeAt = Date.now();
+            }
+          }
+        } catch (e) {
+          console.warn('Native detect err:', e);
+        }
+        setTimeout(tick, 120);
+      };
+      tick();
+      // Avvio assist zoom anche in nativo (aiuta AF)
+      startAutoZoomAssist(caps);
+    }
+
+    // --------- ZXING BRANCH ---------
     function buildHintsEAN() {
       const hints = new Map();
       hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
@@ -250,23 +369,23 @@
     }
 
     async function startZXing() {
-      els.status.textContent = "Avvio scanner…";
+      const logical = els.logicalToggle.checked;
+      const compat = els.compatToggle.checked;
+
       codeReader = new ZXing.BrowserMultiFormatReader(buildHintsEAN());
 
-      // Se "fotocamera logica" è ON: NIENTE deviceId → lasciamo scegliere al SO la pipeline multi-camera
-      const logical = els.logicalToggle.checked;
       const deviceId = logical ? null : (els.cameraSelect.value || currentDeviceId || null);
 
       const constraints = {
         audio: false,
-        video: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
-          facingMode: deviceId ? undefined : { ideal: "environment" },
-          width: { ideal: 1920 }, height: { ideal: 1080 },
-          frameRate: { ideal: 60, max: 60 },
-          focusMode: "continuous",
-          advanced: [{ focusMode: "continuous" }]
-        }
+        video: Object.assign(
+          {},
+          deviceId ? { deviceId: { exact: deviceId } }
+                   : { facingMode: { ideal: "environment" } },
+          compat ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } }
+                 : { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 } },
+          { focusMode: "continuous", advanced: [{ focusMode: "continuous" }] }
+        )
       };
 
       try {
@@ -277,13 +396,11 @@
           streamTrack = s.getVideoTracks()[0];
           const caps = streamTrack.getCapabilities?.() || {};
           els.torchBtn.textContent = caps.torch ? "Torcia: Off" : "Torcia: N/D";
-          // prova ad applicare lo zoom preferito (senza accendere torcia)
           await applyZoom(parseFloat(els.zoom.value), true).catch(()=>{});
-          // avvia auto-zoom assist: se non troviamo nulla per 2s, cambia leggermente zoom (1.4↔2.2)
           startAutoZoomAssist(caps);
         }
 
-        els.status.innerHTML = `<span class="ok">Scanner attivo ✔️ ${logical ? "(logico)" : "(device)"}</span>`;
+        els.status.innerHTML = `<span class="ok">ZXing attivo ✔️ ${logical ? "(logico)" : "(device)"} ${compat ? "• compat" : ""}</span>`;
       } catch (err) { handleError(err); }
     }
 
@@ -295,20 +412,19 @@
         handleDetection(code);
         lastDecodeAt = now;
       } else {
-        // nessun risultato: solo aggiorniamo il timestamp per l'auto-zoom
         if (!lastDecodeAt) lastDecodeAt = now;
       }
       if (err && !(err instanceof ZXing.NotFoundException)) console.warn(err);
     }
 
+    // --------- AUTO-ZOOM ASSIST ---------
     function startAutoZoomAssist(caps) {
       if (autoZoomTimer) { clearInterval(autoZoomTimer); }
       let dir = +1;
       autoZoomTimer = setInterval(async () => {
         if (!streamTrack) return;
         const idleMs = Date.now() - (lastDecodeAt || 0);
-        if (idleMs < 1800) return; // abbiamo letto di recente
-        // sweep piccolo tra 1.4x e 2.2x (se supportato)
+        if (idleMs < 1800) return; // ha letto di recente
         const z = parseFloat(els.zoom.value);
         let target = z + (dir * 0.2);
         if (target > 2.2) { target = 2.2; dir = -1; }
@@ -319,6 +435,7 @@
       }, 900);
     }
 
+    // --------- TORCIA / ZOOM / UTILITY ---------
     async function toggleTorch() {
       if (!streamTrack) return;
       try {
@@ -347,6 +464,7 @@
       } catch (e) { if (!quiet) throw e; }
     }
 
+    // --------- DETECTION COMUNE ---------
     function handleDetection(code) {
       const now = Date.now();
       if (lastSent.code === code && (now - lastSent.time) < 900) return; // debounce ~1s
@@ -364,7 +482,7 @@
     function confirmEffect() {
       try {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (document.getElementById('beep-toggle').checked) {
+        if (els.beepToggle.checked) {
           const o = audioCtx.createOscillator(), g = audioCtx.createGain();
           o.type = "square"; o.frequency.value = 920;
           g.gain.value = 0.0001; o.connect(g); g.connect(audioCtx.destination);
