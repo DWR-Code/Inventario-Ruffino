@@ -89,8 +89,6 @@
           Forza 1280×720 @ 30fps
         </label>
       </div>
-
-      <!-- NEW: Forza motore nativo -->
       <div>
         <label for="nativeToggle">Forza motore nativo</label>
         <label style="display:flex;align-items:center;gap:8px;">
@@ -98,7 +96,6 @@
           Usa sempre BarcodeDetector (se disponibile)
         </label>
       </div>
-
       <div>
         <label for="cameraSelect">Sorgente video (se logica OFF)</label>
         <select id="cameraSelect"></select>
@@ -150,7 +147,7 @@
     <div id="counter" class="muted">Scansioni questa sessione: 0</div>
     <div id="error" class="err"></div>
 
-    <!-- NEW: diagnostica -->
+    <!-- Diagnostica -->
     <pre id="diag" class="muted" style="white-space:pre-wrap;max-height:160px;overflow:auto;margin-top:6px;"></pre>
 
     <details style="margin-top:10px;">
@@ -499,7 +496,7 @@
       if (json.success) {
         els.status.innerHTML = `<span class="ok">Registrato ✔️ — pronto per il prossimo</span>`;
       } else {
-        throw new Error(json.error || "Errore server";
+        throw new Error(json.error || "Errore server");
       }
     }
 
@@ -515,7 +512,7 @@
       }
     }
 
-    // --- NEW: diagnostica ---
+    // --- Diagnostica ---
     async function printDiagnostics() {
       try {
         const supportsNative = !!window.BarcodeDetector;
@@ -527,7 +524,7 @@
         const sc = navigator.mediaDevices.getSupportedConstraints
           ? navigator.mediaDevices.getSupportedConstraints()
           : {};
-        const ua = navigator.userAgent;
+        const uaFull = navigator.userAgent;
 
         let settings = null, caps = null;
         if (streamTrack) {
@@ -536,7 +533,7 @@
         }
 
         const lines = [];
-        lines.push(`UA: ${ua}`);
+        lines.push(`UA: ${uaFull}`);
         lines.push(`BarcodeDetector: ${supportsNative ? 'disponibile' : 'assente'}`);
         if (supFormats.length) lines.push(`Formati nativi: ${supFormats.join(', ')}`);
         lines.push(`Constraints supportati: ${Object.keys(sc).filter(k=>sc[k]).join(', ') || '(n/d)'}`);
