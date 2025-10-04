@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Inventario Ruffino — EAN (universale con fallback nativo)</title>
+  <title>Inventario Ruffino — EAN (universale senza auto-zoom)</title>
 
   <!-- ZXing (UMD) -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
@@ -103,7 +103,7 @@
       </div>
       <div>
         <label>&nbsp;</label>
-        <!-- Torcia NON parte più in automatico -->
+        <!-- Torcia manuale -->
         <button id="torch-btn">Torcia: Off</button>
       </div>
       <div>
@@ -144,7 +144,7 @@
       <summary>Consigli AF / multi-camera</summary>
       <ul class="muted">
         <li>Con <b>Fotocamera logica</b> il telefono usa la pipeline multifocale → AF migliore.</li>
-        <li>Usa i preset <b>1× / 1.5× / 2× / 3×</b>: spesso 1.5–2× fa “saltare” alla lente giusta.</li>
+        <li>Usa i preset <b>1× / 1.5× / 2× / 3×</b> per “saltare” alla lente giusta.</li>
         <li>Se alcuni modelli faticano, attiva <b>Modalità compatibilità</b>.</li>
         <li>Buona luce; se serve usa <b>Torcia</b> (manuale).</li>
       </ul>
@@ -166,8 +166,6 @@
     let sessionCount = 0;
     let lastSent = { code: null, time: 0 };
     let rotated = false;
-    let lastDecodeAt = 0;
-    let autoZoomTimer = null;
 
     // Rileva modelli “sensibili” e auto-abilita compatibilità
     const ua = navigator.userAgent.toLowerCase();
@@ -242,10 +240,9 @@
       els.error.textContent = "";
       sessionCount = 0; updateCounter();
       lastSent = { code: null, time: 0 };
-      lastDecodeAt = 0;
 
       if (!els.logicalToggle.checked) await enumerateCameras();
-      await startScannerUniversal();  // <<< usa nativo se disponibile, altrimenti ZXing
+      await startScannerUniversal();  // nativo se disponibile, altrimenti ZXing
     }
 
     async function enumerateCameras() {
@@ -274,7 +271,6 @@
       els.status.textContent = "Arresto…";
       els.error.textContent = "";
       usingNative = false;
-      if (autoZoomTimer) { clearInterval(autoZoomTimer); autoZoomTimer = null; }
       try { if (codeReader) await codeReader.reset(); } catch {}
       try {
         if (streamTrack) { streamTrack.stop(); streamTrack = null; }
@@ -311,7 +307,6 @@
       const logical = els.logicalToggle.checked;
       const compat = els.compatToggle.checked;
 
-      // Costruisci constraints compatibili
       const constraints = {
         audio: false,
         video: Object.assign(
@@ -333,8 +328,7 @@
       els.torchBtn.textContent = caps.torch ? "Torcia: Off" : "Torcia: N/D";
       await applyZoom(parseFloat(els.zoom.value), true).catch(()=>{});
 
-      // loop polling nativo
-      lastDecodeAt = Date.now();
+      // loop polling nativo (nessun auto-zoom)
       const tick = async () => {
         if (!usingNative) return;
         try {
@@ -343,7 +337,6 @@
             const raw = String(codes[0].rawValue || '').trim();
             if (/^(\d{8}|\d{12}|\d{13})$/.test(raw)) {
               handleDetection(raw);
-              lastDecodeAt = Date.now();
             }
           }
         } catch (e) {
@@ -352,8 +345,6 @@
         setTimeout(tick, 120);
       };
       tick();
-      // Avvio assist zoom anche in nativo (aiuta AF)
-      startAutoZoomAssist(caps);
     }
 
     // --------- ZXING BRANCH ---------
@@ -397,7 +388,6 @@
           const caps = streamTrack.getCapabilities?.() || {};
           els.torchBtn.textContent = caps.torch ? "Torcia: Off" : "Torcia: N/D";
           await applyZoom(parseFloat(els.zoom.value), true).catch(()=>{});
-          startAutoZoomAssist(caps);
         }
 
         els.status.innerHTML = `<span class="ok">ZXing attivo ✔️ ${logical ? "(logico)" : "(device)"} ${compat ? "• compat" : ""}</span>`;
@@ -405,34 +395,12 @@
     }
 
     function onZXingFrame(result, err) {
-      const now = Date.now();
       if (result) {
         const code = result.getText().trim();
         if (!/^(\d{8}|\d{12}|\d{13})$/.test(code)) return; // EAN-8 / UPC-A / EAN-13
         handleDetection(code);
-        lastDecodeAt = now;
-      } else {
-        if (!lastDecodeAt) lastDecodeAt = now;
       }
       if (err && !(err instanceof ZXing.NotFoundException)) console.warn(err);
-    }
-
-    // --------- AUTO-ZOOM ASSIST ---------
-    function startAutoZoomAssist(caps) {
-      if (autoZoomTimer) { clearInterval(autoZoomTimer); }
-      let dir = +1;
-      autoZoomTimer = setInterval(async () => {
-        if (!streamTrack) return;
-        const idleMs = Date.now() - (lastDecodeAt || 0);
-        if (idleMs < 1800) return; // ha letto di recente
-        const z = parseFloat(els.zoom.value);
-        let target = z + (dir * 0.2);
-        if (target > 2.2) { target = 2.2; dir = -1; }
-        if (target < 1.4) { target = 1.4; dir = +1; }
-        els.zoom.value = String(target);
-        els.zoomValue.textContent = `${target.toFixed(1)}×`;
-        await applyZoom(target, true).catch(()=>{});
-      }, 900);
     }
 
     // --------- TORCIA / ZOOM / UTILITY ---------
