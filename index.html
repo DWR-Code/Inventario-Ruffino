@@ -89,6 +89,16 @@
           Forza 1280×720 @ 30fps
         </label>
       </div>
+
+      <!-- NEW: Forza motore nativo -->
+      <div>
+        <label for="nativeToggle">Forza motore nativo</label>
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="nativeToggle" />
+          Usa sempre BarcodeDetector (se disponibile)
+        </label>
+      </div>
+
       <div>
         <label for="cameraSelect">Sorgente video (se logica OFF)</label>
         <select id="cameraSelect"></select>
@@ -140,6 +150,9 @@
     <div id="counter" class="muted">Scansioni questa sessione: 0</div>
     <div id="error" class="err"></div>
 
+    <!-- NEW: diagnostica -->
+    <pre id="diag" class="muted" style="white-space:pre-wrap;max-height:160px;overflow:auto;margin-top:6px;"></pre>
+
     <details style="margin-top:10px;">
       <summary>Consigli AF / multi-camera</summary>
       <ul class="muted">
@@ -182,6 +195,7 @@
       cameraSelect: document.getElementById('cameraSelect'),
       logicalToggle: document.getElementById('logicalToggle'),
       compatToggle: document.getElementById('compatToggle'),
+      nativeToggle: document.getElementById('nativeToggle'),
       restartBtn: document.getElementById('restart-btn'),
       rotateBtn: document.getElementById('rotate-btn'),
       torchBtn: document.getElementById('torch-btn'),
@@ -194,6 +208,7 @@
       password: document.getElementById('password'),
       zoom: document.getElementById('zoom'),
       zoomValue: document.getElementById('zoomValue'),
+      diag: document.getElementById('diag'),
     };
 
     // Preset zoom
@@ -213,6 +228,7 @@
     els.logicalToggle.addEventListener('change', () => {
       if (!els.logicalToggle.checked) enumerateCameras();
     });
+    els.nativeToggle.addEventListener('change', () => restartEngine());
 
     function toggleRotation() {
       if (rotated) els.stage.classList.add('rot90'); else els.stage.classList.remove('rot90');
@@ -284,10 +300,17 @@
     // --------- UNIVERSAL STARTER: Native (if available) -> ZXing ---------
     async function startScannerUniversal() {
       els.status.textContent = "Avvio scanner…";
+      await printDiagnostics();
+
+      const wantNative = els.nativeToggle.checked;
+
       // 1) BarcodeDetector nativo (Chrome/Samsung Internet Android, ecc.)
-      if (window.BarcodeDetector) {
+      if (window.BarcodeDetector && (wantNative || true)) {
         try {
-          const formats = ['ean_13','ean_8','upc_a'];
+          const sup = await (BarcodeDetector.getSupportedFormats?.() || []);
+          const needed = ['ean_13','ean_8','upc_a'];
+          const ok = needed.some(f => sup.includes(f));
+          const formats = ok ? needed : (sup.length ? sup : needed);
           const detector = new BarcodeDetector({ formats });
           await startNativeDetector(detector);   // se va, esce qui
           usingNative = true;
@@ -476,7 +499,7 @@
       if (json.success) {
         els.status.innerHTML = `<span class="ok">Registrato ✔️ — pronto per il prossimo</span>`;
       } else {
-        throw new Error(json.error || "Errore server");
+        throw new Error(json.error || "Errore server";
       }
     }
 
@@ -489,6 +512,43 @@
       }
       if (/NotFoundError|device not found/i.test(els.error.textContent)) {
         els.error.textContent += "\nNessuna camera trovata o permesso negato. HTTPS richiesto.";
+      }
+    }
+
+    // --- NEW: diagnostica ---
+    async function printDiagnostics() {
+      try {
+        const supportsNative = !!window.BarcodeDetector;
+        let supFormats = [];
+        if (supportsNative && BarcodeDetector.getSupportedFormats) {
+          supFormats = await BarcodeDetector.getSupportedFormats();
+        }
+
+        const sc = navigator.mediaDevices.getSupportedConstraints
+          ? navigator.mediaDevices.getSupportedConstraints()
+          : {};
+        const ua = navigator.userAgent;
+
+        let settings = null, caps = null;
+        if (streamTrack) {
+          settings = streamTrack.getSettings ? streamTrack.getSettings() : null;
+          caps = streamTrack.getCapabilities ? streamTrack.getCapabilities() : null;
+        }
+
+        const lines = [];
+        lines.push(`UA: ${ua}`);
+        lines.push(`BarcodeDetector: ${supportsNative ? 'disponibile' : 'assente'}`);
+        if (supFormats.length) lines.push(`Formati nativi: ${supFormats.join(', ')}`);
+        lines.push(`Constraints supportati: ${Object.keys(sc).filter(k=>sc[k]).join(', ') || '(n/d)'}`);
+        if (settings) lines.push(`Video corrente: ${settings.width || '?'}x${settings.height || '?'} @ ${settings.frameRate || '?'}fps`);
+        if (caps) {
+          const torch = caps.torch ? 'si' : 'no';
+          const zoom = caps.zoom ? `si (min:${caps.zoom.min}, max:${caps.zoom.max})` : 'no';
+          lines.push(`Torch: ${torch} | Zoom: ${zoom}`);
+        }
+        els.diag.textContent = lines.join('\n');
+      } catch (e) {
+        els.diag.textContent = `Diagnostica errore: ${e.message || e}`;
       }
     }
   </script>
